@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 proj2md.py —— 项目源码一键拼接工具（输出 Markdown，专为投喂网页端 AI 设计）
@@ -1233,9 +1233,15 @@ def main(argv=None):
         else:
             cprint(t("err_clipboard"))
     return 0
-if __name__ == "__main__":
+
+def cli() -> None:
+    """命令行入口：pip/pipx 安装后由 `proj2md` 可执行文件调用。"""
     try:
         sys.exit(main())
     except KeyboardInterrupt:
         cprint(t("cancelled"))
         sys.exit(130)
+
+
+if __name__ == "__main__":   # 保留：直接 python proj2md.py 依然可用
+    cli()
