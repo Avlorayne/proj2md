@@ -29,9 +29,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Avlorayne/proj2md.py"
-Repository = "https://github.com/Avlorayne/proj2md.py"
-Issues = "https://github.com/Avlorayne/proj2md.py/issues"
+Homepage = "https://github.com/Avlorayne/proj2md"
+Repository = "https://github.com/Avlorayne/proj2md"
+Issues = "https://github.com/Avlorayne/proj2md/issues"
 
 # 纯标准库，无必装依赖；pyperclip 仅优化 --clip 体验
 [project.optional-dependencies]

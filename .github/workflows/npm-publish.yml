@@ -5,7 +5,7 @@ name: Publish to npm
 # 前置配置（只需做一次）：
 #   https://www.npmjs.com/package/proj2md/access -> Trusted Publisher -> GitHub Actions
 #     Organization or user : Avlorayne
-#     Repository           : proj2md.py
+#     Repository           : proj2md
 #     Workflow filename    : npm-publish.yml
 #   配置后无需任何 NPM_TOKEN：CI 通过 OIDC 直接以该仓库身份发布，并自动附带 provenance 签名。
 

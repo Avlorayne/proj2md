@@ -4,14 +4,14 @@
   "description": "proj2md \u2013 merge a whole project into a single Markdown document for web-based AIs. Run via npx, no Python required.",
   "license": "MIT",
   "author": "Avlorayne",
-  "homepage": "https://github.com/Avlorayne/proj2md.py#readme",
+  "homepage": "https://github.com/Avlorayne/proj2md#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Avlorayne/proj2md.py.git",
+    "url": "git+https://github.com/Avlorayne/proj2md.git",
     "directory": "proj2md-js"
   },
   "bugs": {
-    "url": "https://github.com/Avlorayne/proj2md.py/issues"
+    "url": "https://github.com/Avlorayne/proj2md/issues"
   },
   "type": "commonjs",
   "bin": {

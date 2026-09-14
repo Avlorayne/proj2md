@@ -166,4 +166,4 @@ npx proj2md --dry-run
 ```
 
 Full documentation (Chinese/English) lives in the repository:
-<https://github.com/Avlorayne/proj2md.py>
+<https://github.com/Avlorayne/proj2md>
