@@ -3,28 +3,45 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "proj2md"
+# PyPI 包名：proj2md 已被占用，故发布为 proj2md-py；终端命令仍为 proj2md
+name = "proj2md-py"
 version = "2.2.0"
 description = "项目源码一键拼接工具：把整个项目合并成单个 Markdown 文档，方便投喂网页端 AI"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-authors = [{ name = "yourname" }]
-keywords = ["markdown", "ai", "chatgpt", "claude", "gemini", "cli"]
+authors = [{ name = "Avlorayne" }]
+keywords = ["markdown", "ai", "chatgpt", "claude", "gemini", "cli", "uv", "llm", "context"]
 classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Operating System :: OS Independent",
+  "Topic :: Software Development :: Documentation",
+  "Topic :: Text Processing :: Markup :: Markdown",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Avlorayne/proj2md.py"
+Repository = "https://github.com/Avlorayne/proj2md.py"
+Issues = "https://github.com/Avlorayne/proj2md.py/issues"
 
 # 纯标准库，无必装依赖；pyperclip 仅优化 --clip 体验
 [project.optional-dependencies]
 clip = ["pyperclip"]
 
-# ★ 核心：注册 proj2md 命令，指向 proj2md.py 里的 cli()
+# ★ 核心：注册命令，指向 proj2md.py 里的 cli()
+# 同时注册 proj2md 与 proj2md-py 两个命令，使 `uvx proj2md-py` 免安装可用
 [project.scripts]
 proj2md = "proj2md:cli"
+proj2md-py = "proj2md:cli"
 
 # ★ 单文件发行版的关键声明
 [tool.setuptools]

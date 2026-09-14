@@ -6,6 +6,10 @@
 🗂 **项目源码一键拼接工具** —— 把整个项目合并成一份 Markdown，直接投喂给网页端 AI  
 `(ChatGPT / Claude / Gemini / Grok / DeepSeek / GLM / Kimi …) ` 
 
+[![PyPI](https://img.shields.io/pypi/v/proj2md-py)](https://pypi.org/project/proj2md-py/)
+[![Python](https://img.shields.io/pypi/pyversions/proj2md-py)](https://pypi.org/project/proj2md-py/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)  
+[![npm](https://img.shields.io/npm/v/proj2md)](https://www.npmjs.com/package/proj2md)  
 `Python 3.8+` · 零第三方依赖 · 单文件脚本 [proj2md](./proj2md.py) · v2.2.0  
 
 </div>
@@ -45,34 +49,72 @@
 
 ## 🚀 快速开始
 
-无需安装，直接运行（唯一可选依赖 `pyperclip`，仅 `--clip` 需要）：
+### 方式一：uv 安装（推荐）
+
+已发布到 PyPI（包名 `proj2md-py`，终端命令为 `proj2md`）：
 
 ```bash
+# 免安装，临时运行（uv 0.3+ 自带 uvx）
+uvx proj2md-py --prompt "帮我找出潜在 bug 并给出修复建议"
+# 或全局安装，之后直接使用 proj2md 命令
+uv tool install proj2md-py
+
 # 拼接当前目录 -> project_bundle.md
-python proj2md.py
+proj2md
 # 拼接指定项目，并复制到剪贴板
-python proj2md.py /path/to/project --clip
+proj2md /path/to/project --clip
 # 附带你的需求一起投喂
-python proj2md.py --prompt "帮我找出潜在 bug 并给出修复建议"
+proj2md --prompt "帮我找出潜在 bug 并给出修复建议"
 ```
+
+> `pip` 用户：`pip install proj2md-py`，或 `pip install "proj2md-py[clip]"` 一并装上剪贴板支持。
+
+### 方式二：直接运行脚本
+
+无需安装，克隆仓库后直接运行（唯一可选依赖 `pyperclip`，仅 `--clip` 需要）：
+
+```bash
+python proj2md.py
+python proj2md.py /path/to/project --clip
+```
+
+### 方式三：npx / npm（Node.js 版，无需 Python）
+
+已发布到 npm（包名同为 `proj2md`，命令用法完全一致），只要 Node.js ≥ 14，零必需依赖：
+
+```bash
+# 免安装直接运行
+npx proj2md
+npx proj2md /path/to/project -o bundle.md
+npx proj2md --only-ext js ts md --line-numbers --clip
+
+# 或全局安装后直接使用 proj2md 命令
+npm install -g proj2md
+```
+
+> `iconv-lite` 是可选依赖（仅用于 GBK / Big5 编码识别），缺失时自动降级，其余功能不受影响；生成的 Markdown 与 Python 版结构完全一致，可无缝互换。
+> Node 版源码见 [`proj2md-js/`](./proj2md-js)，使用说明见 [proj2md-js/README.md](./proj2md-js/README.md)。
 
 生成后，把 `project_bundle.md` 的内容整个粘贴给网页端 AI 即可 —— Markdown 代码块会自动语法高亮。
 
 ## 📖 常用示例
+
+> 以下示例使用安装后的 `proj2md` 命令；用源码运行的话，把 `proj2md` 换成 `python proj2md.py` 即可。
+
 ```bash
-python proj2md.py --only-ext py md            # 只拼接 Python 与 Markdown
-python proj2md.py --ext proto graphql         # 在默认范围上追加扩展名
-python proj2md.py --exclude-dir tests docs    # 额外排除目录
-python proj2md.py --include-pattern "src/*"   # 强制包含（优先级最高）
-python proj2md.py --include-hidden            # 不忽略 . 开头的文件夹
-python proj2md.py --include-pattern ".github/*"  # 只捞回某个隐藏目录
-python proj2md.py --line-numbers              # 正文带行号，AI 引用更精准
-python proj2md.py --max-file-lines 300        # 单文件超过 300 行则截断
-python proj2md.py --max-total-kb 200          # 总体积预算 200KB
-python proj2md.py --split-tokens 60000        # 过大时切成多个分卷
-python proj2md.py --lang en                   # 界面切英文
-python proj2md.py --dry-run                   # 只预览，不写文件
-python proj2md.py --init-config               # 生成配置模板
+proj2md --only-ext py md            # 只拼接 Python 与 Markdown
+proj2md --ext proto graphql         # 在默认范围上追加扩展名
+proj2md --exclude-dir tests docs    # 额外排除目录
+proj2md --include-pattern "src/*"   # 强制包含（优先级最高）
+proj2md --include-hidden            # 不忽略 . 开头的文件夹
+proj2md --include-pattern ".github/*"  # 只捞回某个隐藏目录
+proj2md --line-numbers              # 正文带行号，AI 引用更精准
+proj2md --max-file-lines 300        # 单文件超过 300 行则截断
+proj2md --max-total-kb 200          # 总体积预算 200KB
+proj2md --split-tokens 60000        # 过大时切成多个分卷
+proj2md --lang en                   # 界面切英文
+proj2md --dry-run                   # 只预览，不写文件
+proj2md --init-config               # 生成配置模板
 ```
 ## ⚙️ 命令行参数
 
@@ -177,9 +219,9 @@ python proj2md.py --init-config               # 生成配置模板
 语言解析优先级：**`--lang` 参数 > 配置文件 `language` 字段 > 系统自动探测 > 英文兜底**。
 
 ```bash
-python proj2md.py --lang en      # 本次运行全英文（含 --help 与报告）
-python proj2md.py --lang zh      # 强制中文
-python proj2md.py --lang auto    # 跟随系统（覆盖配置文件设置）
+proj2md --lang en      # 本次运行全英文（含 --help 与报告）
+proj2md --lang zh      # 强制中文
+proj2md --lang auto    # 跟随系统（覆盖配置文件设置）
 
 ```
 - `auto`（默认）：依次探测环境变量（`LC_ALL` / `LANG`…）→ `locale` 模块 → Windows API，凡 `zh` 开头即中文，否则英文；
@@ -187,7 +229,7 @@ python proj2md.py --lang auto    # 跟随系统（覆盖配置文件设置）
 - 切换的不只是控制台输出 —— 生成的 `.md` 文档内的标题、AI 阅读说明、索引表头、附录等也会跟随语言。
 ## 🪟 配置文件
 ```bash
-python proj2md.py --init-config   # 生成 proj2md.json 模板
+proj2md --init-config   # 生成 proj2md.json 模板
 ```
 按需修改后再次运行即自动读取（无需额外参数）：
 ```json

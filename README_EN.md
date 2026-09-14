@@ -6,6 +6,10 @@
 🗂 **Project source bundler** — merge an entire project into a single Markdown file, ready to paste into web-based AIs  
 `(ChatGPT / Claude / Gemini / Grok / DeepSeek / GLM / Kimi …)`    
 
+[![PyPI](https://img.shields.io/pypi/v/proj2md-py)](https://pypi.org/project/proj2md-py/)
+[![Python](https://img.shields.io/pypi/pyversions/proj2md-py)](https://pypi.org/project/proj2md-py/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)  
+[![npm](https://img.shields.io/npm/v/proj2md)](https://www.npmjs.com/package/proj2md)  
 `Python 3.8+` · Zero dependencies · Single-file script [proj2md](./proj2md.py) · v2.2.0
 
 </div>
@@ -42,34 +46,72 @@
 - 🪟 **Config file**: persist every option in `proj2md.json`; `--init-config` writes a template
 - 👀 **Dry-run preview**: see exactly what would be bundled before writing anything
 ## 🚀 Quick Start
+### Option 1: install with uv (recommended)
+
+Published on PyPI as `proj2md-py` (the terminal command is `proj2md`):
+
+```bash
+# Run once without installing (uv ships uvx)
+uvx proj2md-py --prompt "Find potential bugs and suggest fixes"
+# Or install globally, then just use the proj2md command
+uv tool install proj2md-py
+
+# Bundle current directory -> project_bundle.md
+proj2md
+# Bundle a specific project and copy to clipboard
+proj2md /path/to/project --clip
+# Attach your request along with the code
+proj2md --prompt "Find potential bugs and suggest fixes"
+```
+
+> `pip` users: `pip install proj2md-py`, or `pip install "proj2md-py[clip]"` to include clipboard support.
+
+### Option 2: run the script directly
+
 No installation needed (the only optional dependency is `pyperclip`, used by `--clip`):
 
 ```bash
-# Bundle current directory -> project_bundle.md
 python proj2md.py
-# Bundle a specific project and copy to clipboard
 python proj2md.py /path/to/project --clip
-# Attach your request along with the code
-python proj2md.py --prompt "Find potential bugs and suggest fixes"
 ```
+
+### Option 3: npx / npm (Node.js edition, no Python required)
+
+Also published to npm (same package name `proj2md`, same commands). Node.js ≥ 14, zero required dependencies:
+
+```bash
+# zero-install
+npx proj2md
+npx proj2md /path/to/project -o bundle.md
+npx proj2md --only-ext js ts md --line-numbers --clip
+
+# or install it globally
+npm install -g proj2md
+```
+
+> `iconv-lite` is an optional dependency (GBK / Big5 detection only) and degrades gracefully when missing; the rest keeps working. The generated Markdown is identical in structure to the Python edition — the two are drop-in interchangeable.
+> Node source lives in [`proj2md-js/`](./proj2md-js); see [proj2md-js/README.md](./proj2md-js/README.md).
 
 Then paste the content of `project_bundle.md` straight into a web AI — code blocks get automatic syntax highlighting.
 
 ## 📖 Common Examples
+
+> The examples below use the installed `proj2md` command; when running from source, replace `proj2md` with `python proj2md.py`.
+
 ```bash
-python proj2md.py --only-ext py md            # bundle only Python and Markdown
-python proj2md.py --ext proto graphql         # add extensions on top of defaults
-python proj2md.py --exclude-dir tests docs    # exclude extra directories
-python proj2md.py --include-pattern "src/*"   # force-include (top priority)
-python proj2md.py --include-hidden            # don't ignore dot-prefixed folders
-python proj2md.py --include-pattern ".github/*"  # fish back one hidden dir
-python proj2md.py --line-numbers              # line-numbered body for precise refs
-python proj2md.py --max-file-lines 300        # truncate files beyond 300 lines
-python proj2md.py --max-total-kb 200          # 200KB total budget
-python proj2md.py --split-tokens 60000        # auto-split into volumes
-python proj2md.py --lang zh                   # switch UI to Chinese
-python proj2md.py --dry-run                   # preview only
-python proj2md.py --init-config               # write config template
+proj2md --only-ext py md            # bundle only Python and Markdown
+proj2md --ext proto graphql         # add extensions on top of defaults
+proj2md --exclude-dir tests docs    # exclude extra directories
+proj2md --include-pattern "src/*"   # force-include (top priority)
+proj2md --include-hidden            # don't ignore dot-prefixed folders
+proj2md --include-pattern ".github/*"  # fish back one hidden dir
+proj2md --line-numbers              # line-numbered body for precise refs
+proj2md --max-file-lines 300        # truncate files beyond 300 lines
+proj2md --max-total-kb 200          # 200KB total budget
+proj2md --split-tokens 60000        # auto-split into volumes
+proj2md --lang zh                   # switch UI to Chinese
+proj2md --dry-run                   # preview only
+proj2md --init-config               # write config template
 ```
 ## ⚙️ CLI Options
 
@@ -175,9 +217,9 @@ Even if the source contains ` ``` ` fences, the structure stays intact — fence
 Resolution order: **`--lang` flag > config file `language` field > system auto-detection > English fallback**.
 
 ```bash
-python proj2md.py --lang en      # English for this run (help & reports included)
-python proj2md.py --lang zh      # force Chinese
-python proj2md.py --lang auto    # follow system (overrides config file)
+proj2md --lang en      # English for this run (help & reports included)
+proj2md --lang zh      # force Chinese
+proj2md --lang auto    # follow system (overrides config file)
 ```
 
 - `auto` (default): probes environment variables (`LC_ALL` / `LANG`…) → the `locale` module → the Windows UI-language API; anything starting with `zh` maps to Chinese, otherwise English;
@@ -187,7 +229,7 @@ python proj2md.py --lang auto    # follow system (overrides config file)
 ## 🪟 Config File
 
 ```bash
-python proj2md.py --init-config   # write proj2md.json template
+proj2md --init-config   # write proj2md.json template
 ```
 
 Edit as needed; it is picked up automatically on the next run:
