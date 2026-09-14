@@ -1,0 +1,18 @@
+# Python 构建产物
+__pycache__/
+build/
+dist/
+*.egg-info/
+
+# 运行输出
+project_bundle.md
+*.part*.md
+proj2md.json
+
+# Node.js 版（proj2md-js）
+node_modules/
+.npm-cache/
+*.tgz
+
+# 工作区临时文件
+_tmp/

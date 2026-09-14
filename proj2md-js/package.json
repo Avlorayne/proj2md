@@ -1,0 +1,50 @@
+{
+  "name": "proj2md",
+  "version": "2.2.0",
+  "description": "proj2md \u2013 merge a whole project into a single Markdown document for web-based AIs. Run via npx, no Python required.",
+  "license": "MIT",
+  "author": "Avlorayne",
+  "homepage": "https://github.com/Avlorayne/proj2md.py#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Avlorayne/proj2md.py.git",
+    "directory": "proj2md-js"
+  },
+  "bugs": {
+    "url": "https://github.com/Avlorayne/proj2md.py/issues"
+  },
+  "type": "commonjs",
+  "bin": {
+    "proj2md": "bin/proj2md.js"
+  },
+  "main": "lib/cli.js",
+  "files": [
+    "bin/",
+    "lib/"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "scripts": {
+    "start": "node bin/proj2md.js",
+    "test": "node test/smoke.js"
+  },
+  "keywords": [
+    "markdown",
+    "bundle",
+    "ai",
+    "chatgpt",
+    "claude",
+    "gemini",
+    "prompt",
+    "llm",
+    "context",
+    "source-code",
+    "project",
+    "cli",
+    "npx"
+  ],
+  "optionalDependencies": {
+    "iconv-lite": "^0.6.3"
+  }
+}

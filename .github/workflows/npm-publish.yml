@@ -1,0 +1,43 @@
+name: Publish to npm
+
+# 首次发布（2.2.0）已手动完成；之后发布新版本只需在 GitHub 上打一个 Release，这里会自动发到 npm。
+#
+# 前置配置（只需做一次）：
+#   https://www.npmjs.com/package/proj2md/access -> Trusted Publisher -> GitHub Actions
+#     Organization or user : Avlorayne
+#     Repository           : proj2md.py
+#     Workflow filename    : npm-publish.yml
+#   配置后无需任何 NPM_TOKEN：CI 通过 OIDC 直接以该仓库身份发布，并自动附带 provenance 签名。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write      # Trusted Publishing (OIDC) 必需
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proj2md-js
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing 需要 npm CLI >= 11.5.1
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Smoke test
+        run: npm test
+
+      - name: Publish
+        run: npm publish --provenance --access public
