@@ -29,12 +29,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24          # Node 20 已 EOL；npm 12 亦要求 Node >= 24.15
           registry-url: https://registry.npmjs.org
 
-      # Trusted Publishing 需要 npm CLI >= 11.5.1
+      # Trusted Publishing 需要 npm CLI >= 11.5.1。
+      # 固定在大版本 11：npm@latest 已升到 12.x，而 npm 12 要求 Node >= 24.15，
+      # 直接装 @latest 会在 engine 校验上失败，且下次 npm 大版本更新还会再犯。
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@^11.5.1
 
       - name: Smoke test
         run: npm test
