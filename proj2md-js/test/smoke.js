@@ -31,9 +31,14 @@ function ok(name, cond, extra) {
 function run(args) {
   const log = path.join(LOGS, 'out' + (++seq) + '.txt');
   const fd = fs.openSync(log, 'w');
+  const env = {
+    ...process.env,
+    LANG: 'zh_CN.UTF-8',
+    LANGUAGE: 'zh_CN.UTF-8',
+  };
   let r;
   try {
-    r = spawnSync(process.execPath, [BIN].concat(args), { stdio: ['ignore', fd, fd] });
+    r = spawnSync(process.execPath, [BIN].concat(args), { env, stdio: ['ignore', fd, fd] });
   } finally {
     fs.closeSync(fd);
   }

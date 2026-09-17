@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/proj2md-py)](https://pypi.org/project/proj2md-py/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)  
 [![npm](https://img.shields.io/npm/v/proj2md)](https://www.npmjs.com/package/proj2md)  
-`Python 3.8+` · Zero dependencies · Single-file script [proj2md](./proj2md.py) · v2.3.0
+`Python 3.8+` · Zero dependencies · Single-file script [proj2md](./proj2md.py) · v2.3.2
 
 </div>
 
@@ -49,6 +49,13 @@
 - 🌐 **Remote repository input**: bundle a GitHub URL at a selected ref without running `git clone`
 
 ## 🚀 Quick Start
+
+To run it immediately, use either command:
+
+```bash
+uvx proj2md-py              # Python edition; PyPI package name is proj2md-py
+npx proj2md                 # Node.js edition; npm package name is proj2md
+```
 
 ### Option 1: install with uv (recommended)
 
@@ -313,7 +320,7 @@ python tests/test_proj2md.py    # Python edition regression tests
 cd proj2md-js && npm test       # Node edition smoke tests
 ```
 
-> Bump both version numbers together when releasing. npm publishes automatically from a GitHub Release via [npm-publish.yml](./.github/workflows/npm-publish.yml) (Trusted Publishing, no token); PyPI is published locally with `uv build && uv publish`.
+> Bump both version numbers together when releasing. npm publishes automatically from a GitHub Release via [npm-publish.yml](./.github/workflows/npm-publish.yml) (Trusted Publishing, no token); PyPI publishes automatically via [pypi-publish.yml](./.github/workflows/pypi-publish.yml) using Trusted Publishing. Before the first run, add that GitHub Actions Trusted Publisher in the PyPI settings for `proj2md-py`. If you must publish locally, use a PyPI API token, such as `uv publish --token "$PYPI_TOKEN"`, not an account password.
 
 ## 📜 License
 [MIT](./LICENSE) © 2025

@@ -52,7 +52,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-VERSION = "2.3.0"
+VERSION = "2.3.2"
 TOOL = "proj2md"
 CONFIG_FILENAME = "proj2md.json"
 DEFAULT_OUTPUT = "project_bundle.md"

@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '2.3.0';
+const VERSION = '2.3.2';
 const TOOL = 'proj2md';
 const CONFIG_FILENAME = 'proj2md.json';
 const DEFAULT_OUTPUT = 'project_bundle.md';
@@ -144,4 +144,3 @@ module.exports = {
   FENCE_LANG_BY_EXT, FENCE_LANG_BY_NAME,
   CONFIG_MANIFESTS, ENTRY_STEMS, ENTRY_EXTS, CONFIG_TEMPLATE,
 };
-

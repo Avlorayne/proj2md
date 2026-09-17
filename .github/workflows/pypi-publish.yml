@@ -1,0 +1,33 @@
+name: Publish to PyPI
+
+# One-time setup on PyPI:
+#   https://pypi.org/manage/project/proj2md-py/settings/publishing/
+#   Add a GitHub Actions trusted publisher with:
+#     Owner      : Avlorayne
+#     Repository : proj2md
+#     Workflow   : pypi-publish.yml
+#
+# After that, GitHub Actions publishes through OIDC. No PYPI_TOKEN is needed.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build
+        run: uv build
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

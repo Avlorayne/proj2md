@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/proj2md-py)](https://pypi.org/project/proj2md-py/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)  
 [![npm](https://img.shields.io/npm/v/proj2md)](https://www.npmjs.com/package/proj2md)  
-`Python 3.8+` · 零第三方依赖 · 单文件脚本 [proj2md](./proj2md.py) · v2.3.0  
+`Python 3.8+` · 零第三方依赖 · 单文件脚本 [proj2md](./proj2md.py) · v2.3.2
 
 </div>
 
@@ -50,6 +50,13 @@
 - 🌐 **远程仓库直出**：传入 GitHub 仓库链接即可下载指定版本的源码归档并生成合集，无需 `git clone`
 
 ## 🚀 快速开始
+
+只想马上运行的话，用下面任意一条：
+
+```bash
+uvx proj2md-py              # Python 版，PyPI 包名是 proj2md-py
+npx proj2md                 # Node.js 版，npm 包名是 proj2md
+```
 
 ### 方式一：uv 安装（推荐）
 
@@ -307,7 +314,7 @@ python tests/test_proj2md.py    # Python 版回归测试
 cd proj2md-js && npm test       # Node 版冒烟测试
 ```
 
-> 发布新版本时两处版本号需同步递增：npm 由 GitHub Release 触发 [npm-publish.yml](./.github/workflows/npm-publish.yml) 自动发布（Trusted Publishing，无需 token）；PyPI 在本地执行 `uv build && uv publish`。
+> 发布新版本时两处版本号需同步递增：npm 由 GitHub Release 触发 [npm-publish.yml](./.github/workflows/npm-publish.yml) 自动发布（Trusted Publishing，无需 token）；PyPI 由 [pypi-publish.yml](./.github/workflows/pypi-publish.yml) 通过 Trusted Publishing 自动发布。首次使用前需在 PyPI 的 `proj2md-py` 项目设置里添加该 GitHub Actions Trusted Publisher。若必须本地发布，请使用 PyPI API Token（如 `uv publish --token "$PYPI_TOKEN"`），不要再使用账号密码。
 
 ## 📜 许可证
 [MIT](./LICENSE) © 2025
