@@ -4,6 +4,10 @@ build/
 dist/
 *.egg-info/
 
+# uv（本项目零运行时依赖，无需提交锁文件；它还会记录版本号，发版时反成负担）
+.venv/
+uv.lock
+
 # 运行输出
 project_bundle.md
 *.part*.md
