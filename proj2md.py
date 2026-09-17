@@ -18,9 +18,15 @@ proj2md.py —— 项目源码一键拼接工具（输出 Markdown，专为投�
   - 默认 auto：自动跟随系统语言（中文系统 → 中文输出，其余 → 英文输出）
   - --lang zh / --lang en：临时切换界面语言（含 --help、控制台报告、生成的文档说明）
   - proj2md.json 中 "language": "zh" / "en" / "auto"：持久化设置
+远程仓库（v2.3.0 新增）：
+  --repo 直接打包远端仓库快照，不执行 git clone：
+  - GitHub URL 走源码归档接口，私有仓库可用环境变量 GITHUB_TOKEN / GH_TOKEN
+  - 其他 Git 服务尝试 git archive --remote，需服务端开启 git-upload-archive
+  - --ref 指定分支 / 标签 / 提交（默认 HEAD）；不能与本地 root 参数同时使用
 快速上手
   python proj2md.py                          # 拼接当前目录 -> project_bundle.md
   python proj2md.py /path/to/project         # 拼接指定项目
+  python proj2md.py --repo https://github.com/owner/repo --ref main
   python proj2md.py --clip                   # 生成并复制到剪贴板
   python proj2md.py --prompt "帮我找出潜在 bug"
   python proj2md.py --dry-run                # 只预览，不写文件
@@ -29,6 +35,7 @@ proj2md.py —— 项目源码一键拼接工具（输出 Markdown，专为投�
 from __future__ import annotations
 import argparse
 import fnmatch
+import io
 import json
 import locale
 import os
@@ -36,11 +43,16 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 TOOL = "proj2md"
 CONFIG_FILENAME = "proj2md.json"
 DEFAULT_OUTPUT = "project_bundle.md"
@@ -207,6 +219,7 @@ _ASCII_FALLBACK = str.maketrans({
     "═": "=", "─": "-", "├": "|", "└": "`", "│": "|",
     "▶": ">", "✔": "[OK]", "⚠": "[!]", "❌": "[X]", "★": "*",
     "…": "...", "·": "-",
+    "✅": "[OK]", "⚠": "[!]", "️": "",
     "（": "(", "）": ")", "「": '"', "」": '"',
 })
 # ═══════════════════════ 多语言系统（zh / en）═══════════════════════
@@ -241,6 +254,8 @@ LANG_TEXTS = {
   通配符规则同 fnmatch，* 可跨目录层级（如 "src/*" 匹配 src 下所有文件）。""",
         "arg_help": "显示本帮助信息并退出",
         "arg_root": "项目根目录（默认当前目录）",
+        "arg_repo": "远程 Git 仓库 URL（不 clone；GitHub 下载源码归档，其他服务尝试 git archive）",
+        "arg_ref": "远程仓库的分支、标签或提交引用（默认 HEAD）",
         "arg_output": "输出文件路径（默认 {out}）",
         "arg_ext": "在默认范围上追加扩展名，如 --ext py md",
         "arg_only_ext": "只包含指定扩展名（替换默认范围）",
@@ -272,6 +287,9 @@ LANG_TEXTS = {
         "arg_version": "显示版本号",
         # ── 主流程消息 ──
         "err_root_not_dir": "错误：项目目录不存在或不是目录: {root}",
+        "err_repo_and_root": "错误：--repo 与本地项目目录不能同时指定。",
+        "err_repo_fetch": "错误：无法获取远程仓库快照：{err}",
+        "err_init_config_repo": "错误：--init-config 不能与 --repo 同用（模板只能生成在本地目录）。",
         "err_config_exists": "错误：配置文件已存在: {path}（如需重新生成请先删除）",
         "ok_config_created": "✔ 已生成配置模板: {path}",
         "config_hint": " 按需修改后再次运行 proj2md 即可自动读取（命令行参数优先级更高）。language 字段可设 auto / zh / en 切换界面语言。",
@@ -385,6 +403,8 @@ Notes:
   Glob rules follow fnmatch; * spans directory levels (e.g. "src/*" matches everything under src).""",
         "arg_help": "show this help message and exit",
         "arg_root": "project root directory (default: current directory)",
+        "arg_repo": "remote Git repository URL (no clone; GitHub downloads an archive, others try git archive)",
+        "arg_ref": "remote branch, tag, or commit ref (default: HEAD)",
         "arg_output": "output file path (default: {out})",
         "arg_ext": "add extensions on top of the default set, e.g. --ext py md",
         "arg_only_ext": "include only these extensions (replaces the default set)",
@@ -416,6 +436,9 @@ Notes:
         "arg_version": "show version and exit",
         # ── main-flow messages ──
         "err_root_not_dir": "Error: project directory does not exist or is not a directory: {root}",
+        "err_repo_and_root": "Error: --repo and a local project directory cannot be used together.",
+        "err_repo_fetch": "Error: could not fetch remote repository snapshot: {err}",
+        "err_init_config_repo": "Error: --init-config cannot be combined with --repo (a template can only be written to a local directory).",
         "err_config_exists": "Error: config file already exists: {path} (delete it first if you want to regenerate)",
         "ok_config_created": "✔ Config template created: {path}",
         "config_hint": " Edit it as needed, then run proj2md again — it is loaded automatically (CLI arguments take priority). Set \"language\" to auto / zh / en to switch the UI language.",
@@ -968,14 +991,14 @@ def print_summary(out_path: Path, records, skipped, text: str, pruned_hidden=Non
     cprint()
     cprint(t("sum_tip1"))
     cprint(t("sum_tip2"))
-def dry_run_report(cfg: Config, records, skipped, pruned_hidden=None):
+def dry_run_report(cfg: Config, records, skipped, pruned_hidden=None, root_name=None):
     tot = sum(estimate_tokens(r.content) for r in records)
     pruned_hidden = pruned_hidden or []
     cprint(t("dry_preview", n=len(records),
              lines=f"{sum(r.lines for r in records):,}", tokens=f"{tot:,}"))
     if cfg.show_tree:
         cprint()
-        cprint(build_tree(records, cfg.root.name).rstrip("\n"))
+        cprint(build_tree(records, root_name or cfg.root.name).rstrip("\n"))
         cprint()
     for i, r in enumerate(records, 1):
         flag = t("dry_truncated_flag") if r.truncated else ""
@@ -1013,7 +1036,9 @@ def parse_args(argv=None):
         add_help=False)   # 关闭 argparse 自动注册的 -h/--help，改为下方显式声明
     p.add_argument("-h", "--help", action="help", default=argparse.SUPPRESS,
                    help=t("arg_help"))
-    p.add_argument("root", nargs="?", default=".", help=t("arg_root"))
+    p.add_argument("root", nargs="?", default=None, help=t("arg_root"))
+    p.add_argument("--repo", default=None, metavar="URL", help=t("arg_repo"))
+    p.add_argument("--ref", default=None, metavar="REF", help=t("arg_ref"))
     p.add_argument("-o", "--output", default=None, help=t("arg_output", out=DEFAULT_OUTPUT))
     p.add_argument("--ext", nargs="+", metavar="EXT", help=t("arg_ext"))
     p.add_argument("--only-ext", nargs="+", metavar="EXT", help=t("arg_only_ext"))
@@ -1124,16 +1149,121 @@ def load_prompt(args) -> str:
         except Exception as e:
             cprint(t("warn_prompt_file", err=e))
     return ""
+
+# ─────────────────────────── 远程仓库（不 clone） ───────────────────────────
+def github_repo(url: str):
+    """将常见的 GitHub HTTPS/SSH URL 解析为 (owner, repo)，否则返回 None。"""
+    clean = url.strip().split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    m = re.match(r"^(?:(?:https?|ssh)://(?:[^@/]+@)?|[^@/:]+@)?(?:www\.)?github\.com[/:]([^/\s:]+)/([^/\s]+)$", clean,
+                 re.IGNORECASE)
+    if not m:
+        return None
+    owner, repo = m.groups()
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return (owner, repo) if owner and repo else None
+
+def _safe_archive_path(name: str) -> Path | None:
+    """拒绝绝对路径 / 盘符路径 / ..，避免不可信归档写出临时目录。
+
+    盘符路径（如 "C:x"）在 Windows 上 is_absolute() 为 False，但用它做 / 运算
+    会得到 "C:x" —— 相对当前盘工作目录，从而逃出目标目录，故一并拒绝。
+    """
+    if not name:
+        return None
+    pure = Path(*name.replace("\\", "/").split("/"))
+    if pure.is_absolute() or pure.drive or ".." in pure.parts:
+        return None
+    return pure
+
+def extract_tar(data: bytes, destination: Path) -> Path:
+    """安全展开 tar/tar.gz，并去掉归档共有的顶层目录（若存在）。"""
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
+        members = [m for m in archive.getmembers() if m.isfile() or m.isdir()]
+        paths = [(m, _safe_archive_path(m.name)) for m in members]
+        paths = [(m, p) for m, p in paths if p]
+        file_paths = [p for member, p in paths if member.isfile()]
+        first = {p.parts[0] for p in file_paths if len(p.parts) > 1}
+        strip_top = (next(iter(first)) if len(first) == 1
+                     and file_paths and all(len(p.parts) > 1 for p in file_paths) else None)
+        for member, rel in paths:
+            if strip_top:
+                if len(rel.parts) == 1:  # 归档的顶层目录本身
+                    continue
+                rel = Path(*rel.parts[1:])
+            target = destination / rel
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            if source is not None:
+                with source, target.open("wb") as out:
+                    shutil.copyfileobj(source, out)
+    return destination
+
+def fetch_remote_repo(url: str, ref: str | None, destination: Path) -> tuple[Path, str]:
+    """下载一个远程仓库快照；GitHub 走归档 API，其他服务器走 git archive。"""
+    ref = ref or "HEAD"
+    parsed = github_repo(url)
+    try:
+        if parsed:
+            owner, repo = parsed
+            endpoint = "https://api.github.com/repos/{}/{}/tarball/{}".format(
+                urllib.parse.quote(owner, safe=""), urllib.parse.quote(repo, safe=""),
+                urllib.parse.quote(ref, safe=""))
+            headers = {"User-Agent": "proj2md", "Accept": "application/vnd.github+json"}
+            token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            with urllib.request.urlopen(urllib.request.Request(endpoint, headers=headers), timeout=60) as response:
+                payload = response.read()
+            label = f"{owner}/{repo}@{ref}"
+        else:
+            cmd = ["git", "archive", "--format=tar", f"--remote={url}", ref]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            if result.returncode:
+                detail = result.stderr.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(detail or "git archive failed")
+            payload = result.stdout
+            name = Path(url.rstrip("/")).stem
+            if name.endswith(".git"):
+                name = name[:-4]
+            label = f"{name}@{ref}"
+        if not payload:
+            raise RuntimeError("remote archive is empty")
+        return extract_tar(payload, destination), label
+    except (OSError, urllib.error.URLError, tarfile.TarError, RuntimeError) as e:
+        raise RuntimeError(str(e)) from e
 # ─────────────────────────── 主流程 ───────────────────────────
 def main(argv=None):
     args = parse_args(argv)
     if args.version:
         cprint(f"{TOOL} v{VERSION}")
         return 0
-    root = Path(args.root).expanduser().resolve()
+    remote_tmp = None
+    root_label = None
+    if args.repo:
+        if args.root:
+            cprint(t("err_repo_and_root"))
+            return 2
+        if args.init_config:
+            cprint(t("err_init_config_repo"))
+            return 2
+        try:
+            remote_tmp = tempfile.TemporaryDirectory(prefix="proj2md-")
+            root, root_label = fetch_remote_repo(args.repo, args.ref, Path(remote_tmp.name))
+        except RuntimeError as e:
+            if remote_tmp:
+                remote_tmp.cleanup()
+            cprint(t("err_repo_fetch", err=e))
+            return 1
+    else:
+        root = Path(args.root or ".").expanduser().resolve()
+        root_label = root.name
     quiet = args.quiet
     cfg_path = (Path(args.config).expanduser().resolve()
-                if args.config else root / CONFIG_FILENAME)
+                if args.config else (Path(remote_tmp.name) / CONFIG_FILENAME if remote_tmp else root / CONFIG_FILENAME))
     # ── 1. 先静默读取配置文件（界面语言可能写在里面），暂存加载结果 ──
     data, load_state = {}, None   # None / ("ok",) / ("bad_root",) / ("error", exc)
     if not args.no_config and cfg_path.is_file():
@@ -1180,7 +1310,7 @@ def main(argv=None):
         return 1
     prompt_text = load_prompt(args)
     if args.dry_run:
-        dry_run_report(cfg, records, skipped, pruned_hidden)
+        dry_run_report(cfg, records, skipped, pruned_hidden, root_label)
         return 0
     # ── 分卷模式 ──
     if cfg.split_tokens and not args.stdout:
@@ -1202,7 +1332,7 @@ def main(argv=None):
                 label = t("part_label", i=i, n=len(chunks))
                 sk = skipped if i == len(chunks) else []
                 ph = pruned_hidden if i == len(chunks) else []
-                txt = render(cfg, chunk, sk, prompt_text, root.name,
+                txt = render(cfg, chunk, sk, prompt_text, root_label,
                              part_label=label, pruned_hidden=ph)
                 p = base.with_name(f"{stem}.part{i}{suf}")
                 with open(p, "w", encoding="utf-8", newline="\n") as fh:
@@ -1214,7 +1344,7 @@ def main(argv=None):
             if not quiet:
                 cprint(t("split_hint", n=cfg.split_tokens, total=len(chunks)))
             return 0
-    text = render(cfg, records, skipped, prompt_text, root.name, pruned_hidden=pruned_hidden)
+    text = render(cfg, records, skipped, prompt_text, root_label, pruned_hidden=pruned_hidden)
     if args.stdout:
         sys.stdout.write(text)
         return 0

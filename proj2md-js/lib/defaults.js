@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const TOOL = 'proj2md';
 const CONFIG_FILENAME = 'proj2md.json';
 const DEFAULT_OUTPUT = 'project_bundle.md';

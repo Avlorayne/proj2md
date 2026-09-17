@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/proj2md-py)](https://pypi.org/project/proj2md-py/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)  
 [![npm](https://img.shields.io/npm/v/proj2md)](https://www.npmjs.com/package/proj2md)  
-`Python 3.8+` · Zero dependencies · Single-file script [proj2md](./proj2md.py) · v2.2.0
+`Python 3.8+` · Zero dependencies · Single-file script [proj2md](./proj2md.py) · v2.3.0
 
 </div>
 
@@ -29,6 +29,7 @@
 - [🪟 Config File](#-config-file)
 - [📏 Size & Token Budget](#-size--token-budget)
 - [💡 Tips & FAQ](#-tips--faq)
+- [🧱 Repository Layout](#-repository-layout)
 - [📜 License](#-license)
 
 ## ✨ Features
@@ -45,7 +46,10 @@
 - 🈶 **Encoding friendly**: auto-detects UTF-8 / GBK / Big5 / Latin-1; falls back to ASCII symbols on limited terminals
 - 🪟 **Config file**: persist every option in `proj2md.json`; `--init-config` writes a template
 - 👀 **Dry-run preview**: see exactly what would be bundled before writing anything
+- 🌐 **Remote repository input**: bundle a GitHub URL at a selected ref without running `git clone`
+
 ## 🚀 Quick Start
+
 ### Option 1: install with uv (recommended)
 
 Published on PyPI as `proj2md-py` (the terminal command is `proj2md`):
@@ -112,7 +116,13 @@ proj2md --split-tokens 60000        # auto-split into volumes
 proj2md --lang zh                   # switch UI to Chinese
 proj2md --dry-run                   # preview only
 proj2md --init-config               # write config template
+proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # bundle a remote repository without cloning
 ```
+
+> For `--repo`, GitHub uses its source-archive endpoint; set `GITHUB_TOKEN` or `GH_TOKEN` for a private repository. Other Git hosts are tried with `git archive --remote`, which requires the server to support `git-upload-archive`. A remote snapshot includes only committed files at the selected ref—not uncommitted work, history, populated submodules, or LFS object contents.
+>
+> Both editions pick up a proxy automatically: the Python edition uses the standard library's system-proxy handling, and the Node edition reads `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` (either case) plus, on Windows, the system proxy configured in Internet Options.
+
 ## ⚙️ CLI Options
 
 **Input & output**
@@ -120,6 +130,8 @@ proj2md --init-config               # write config template
 | Option | Description |
 |---|---|
 | `root` (positional) | project root directory (default: current directory) |
+| `--repo <url>` | remote Git repository URL; download a snapshot and bundle it without cloning (cannot be combined with `root`) |
+| `--ref <ref>` | branch, tag, or commit ref used with `--repo` (default `HEAD`) |
 | `-o, --output <file>` | output file path (default `project_bundle.md`) |
 | `--stdout` | print to stdout instead of writing a file |
 | `--clip` | copy the result to the system clipboard |
@@ -269,6 +281,39 @@ Tokens are roughly estimated (CJK ≈ 1.1 tokens/char, others ≈ 3.8 chars/toke
 - **Garbled Chinese on Windows?** The script auto-degrades CJK symbols to ASCII; you can also run `chcp 65001` first.
 - **`--clip` failing?** `pip install pyperclip`, or copy manually from the output file.
 - **Full-control mode**: `--any-text` plus `--include-hidden` collects every text file in the project.
+
+## 🧱 Repository Layout
+
+The same feature set ships as two implementations with identical CLI options, identical `proj2md.json` keys and identical generated Markdown — pick whichever runtime you already have.
+
+```
+proj2md/
+├── proj2md.py           # Python edition: single-file script, standard library only (Python 3.8+)
+├── pyproject.toml       #   └─ packaged as the PyPI project proj2md-py (uv / pip)
+├── tests/               #   └─ regression tests: python tests/test_proj2md.py
+├── README.md / README_EN.md
+└── proj2md-js/          # Node edition: pure Node.js, zero required dependencies (Node.js >= 14)
+    ├── bin/proj2md.js   #   └─ published to npm as proj2md (npx / npm)
+    ├── lib/             #      discover / reader / render / i18n / remote …
+    ├── test/smoke.js    #      smoke test: npm test
+    └── package.json
+```
+
+| | Python edition | Node edition |
+|---|---|---|
+| Package name | `proj2md-py` (PyPI) | `proj2md` (npm) |
+| Install | `uvx proj2md-py` / `uv tool install proj2md-py` / `pip install proj2md-py` | `npx proj2md` / `npm i -g proj2md` |
+| Runtime | Python 3.8+, no third-party deps | Node.js >= 14, optional `iconv-lite` |
+| Version lives in | [pyproject.toml](./pyproject.toml) | [proj2md-js/package.json](./proj2md-js/package.json) |
+
+Both editions produce byte-identical output for the same project and options; `tests/test_proj2md.py` asserts the version numbers stay in sync.
+
+```bash
+python tests/test_proj2md.py    # Python edition regression tests
+cd proj2md-js && npm test       # Node edition smoke tests
+```
+
+> Bump both version numbers together when releasing. npm publishes automatically from a GitHub Release via [npm-publish.yml](./.github/workflows/npm-publish.yml) (Trusted Publishing, no token); PyPI is published locally with `uv build && uv publish`.
 
 ## 📜 License
 [MIT](./LICENSE) © 2025

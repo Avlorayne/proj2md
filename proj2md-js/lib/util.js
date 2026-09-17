@@ -32,11 +32,24 @@ function fmtSize(n) {
   }
 }
 function fmtInt(n) { return Number(n).toLocaleString('en-US'); }
+/** 按 Unicode 码点计数，与 Python 的 len(str) 对齐（emoji 等增补平面字符按 1 计）。 */
+function cpLen(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const hi = s.charCodeAt(i);
+    if (hi >= 0xd800 && hi <= 0xdbff && i + 1 < s.length) {
+      const lo = s.charCodeAt(i + 1);
+      if (lo >= 0xdc00 && lo <= 0xdfff) i++;
+    }
+    n++;
+  }
+  return n;
+}
 /** 粗略估算 token：中文按 ~1.1 token/字，其他按 ~3.8 字符/token。 */
 function estimateTokens(text) {
   const m = text.match(CJK_RE);
   const cjk = m ? m.length : 0;
-  return Math.trunc(cjk * 1.1 + (text.length - cjk) / 3.8);
+  return Math.trunc(cjk * 1.1 + (cpLen(text) - cjk) / 3.8);
 }
 function tokenHint(tok) {
   if (tok < 30_000) return t('hint_moderate');
@@ -118,7 +131,7 @@ function fnmatch(name, pat) {
   return re.test(name);
 }
 module.exports = {
-  cprint, expandUser, normalizeExt, fmtSize, fmtInt, estimateTokens, tokenHint,
+  cprint, expandUser, normalizeExt, fmtSize, fmtInt, cpLen, estimateTokens, tokenHint,
   baseNameOf, extOf, stemOf, langOf,
   fenceFor, fenceLangOf, mdSlug, mdCodeSpan, mdTableCell, fnmatch,
 };

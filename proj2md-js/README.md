@@ -36,6 +36,9 @@ npx proj2md --only-ext js ts md --line-numbers
 
 # 附带你的需求，并复制到剪贴板
 npx proj2md --prompt "帮我找出潜在 bug" --clip
+
+# 不 clone，直接打包远程仓库（GitHub 走源码归档，其余服务尝试 git archive --remote）
+npx proj2md --repo https://github.com/owner/repo --ref main -o bundle.md
 ```
 
 全局安装后直接使用 `proj2md` 命令：
@@ -61,13 +64,19 @@ proj2md --split-tokens 60000          # 体积过大时自动切成多个分卷
 proj2md --lang en                     # 界面切英文（auto / zh / en）
 proj2md --dry-run                     # 只预览，不写文件
 proj2md --init-config                 # 生成 proj2md.json 配置模板
+proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clone，直接打包远程仓库
 ```
+
+> `--repo` 对 GitHub 下载源码归档；私有仓库可设置环境变量 `GITHUB_TOKEN` 或 `GH_TOKEN`。其他 Git 服务会尝试 `git archive --remote`，因此需要服务端开启 `git-upload-archive`。远程模式只读取指定版本的已提交文件，不包含本地改动、历史、子模块实际内容或 LFS 大文件实体。
+>
+> 需要代理时，Node 版本会自动读取 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`（大小写均可），在 Windows 上还会读取「Internet 选项」里的系统代理设置。
 
 ## ⚙️ 主要参数
 
 | 参数 | 说明 |
 | --- | --- |
 | `[root]` | 项目根目录（默认当前目录） |
+| `--repo URL` / `--ref REF` | 远程 Git 仓库 URL / 其分支、标签或提交引用（默认 `HEAD`）；不执行 clone，不能与 `[root]` 同用 |
 | `-o, --output <file>` | 输出文件（默认 `project_bundle.md`） |
 | `--ext <e...>` / `--only-ext <e...>` | 追加扩展名 / 只用这些扩展名 |
 | `--any-text` | 包含所有非二进制文本文件（忽略扩展名白名单） |
@@ -137,6 +146,9 @@ npm publish --dry-run                 # 检查将被打包的文件
 npm publish                           # 发布到 npm（账号开启 2FA 时会提示输入 OTP）
 ```
 
+> 本目录的 `VERSION`（`lib/defaults.js`）与 `package.json` 的 `version` 必须与 Python 版 `pyproject.toml` 保持一致，
+> 仓库根目录的 `tests/test_proj2md.py` 会校验这一点。日常提交由 GitHub Release 触发自动发布，无需手动 `npm publish`。
+
 发布后任何人即可直接运行：
 
 ```bash
@@ -163,6 +175,7 @@ npx proj2md ./my-project -o bundle.md
 npx proj2md --only-ext js ts md --line-numbers --clip
 npx proj2md --prompt "review my code" --split-tokens 60000
 npx proj2md --dry-run
+npx proj2md --repo https://github.com/owner/repo --ref main   # no git clone required
 ```
 
 Full documentation (Chinese/English) lives in the repository:

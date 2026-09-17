@@ -207,12 +207,112 @@ ok('missing root -> exit 1', run([path.join(TMP, 'nope')]).status === 1);
 const empty = path.join(TMP, 'empty');
 fs.mkdirSync(empty, { recursive: true });
 ok('empty root -> exit 1', run([empty]).status === 1);
+ok('--repo with root -> exit 2', run(['--repo', 'https://github.com/o/r', PROJ]).status === 2);
+ok('--repo with --init-config -> exit 2', run(['--repo', 'https://github.com/o/r', '--init-config']).status === 2);
 
-// ── 收尾 ──
-process.stdout.write('\n' + pass + ' passed, ' + failures.length + ' failed\n');
-if (failures.length) {
-  process.stdout.write('failed: ' + failures.join(', ') + '\n');
-  process.exitCode = 1;
-} else {
-  fs.rmSync(TMP, { recursive: true, force: true });
+// ── 10. 远程仓库（离线校验，不访问网络） ──
+section('10. remote repo helpers');
+const remote = require(path.join(__dirname, '..', 'lib', 'remote.js'));
+const gh = remote.githubRepo;
+ok('parses https URL', JSON.stringify(gh('https://github.com/Avlorayne/proj2md')) === JSON.stringify({ owner: 'Avlorayne', repo: 'proj2md' }));
+ok('parses .git / trailing slash / query', JSON.stringify(gh('https://github.com/Avlorayne/proj2md.git/?tab=readme')) === JSON.stringify({ owner: 'Avlorayne', repo: 'proj2md' }));
+ok('parses ssh form', JSON.stringify(gh('git@github.com:Avlorayne/proj2md.git')) === JSON.stringify({ owner: 'Avlorayne', repo: 'proj2md' }));
+ok('rejects non-GitHub host', gh('https://gitlab.com/owner/repo') === null);
+ok('rejects bare shorthand', gh('octocat/Hello-World') === null);
+
+// 造一个带顶层目录的 tar.gz（含 ../ 与盘符穿越条目），验证解包与路径隔离
+function tarBlock(name, body) {
+  const hdr = Buffer.alloc(512);
+  hdr.write(name, 0, 'utf8');
+  hdr.write('0000644\0', 100, 'ascii');
+  hdr.write('0000000\0', 108, 'ascii');
+  hdr.write('0000000\0', 116, 'ascii');
+  hdr.write(body.length.toString(8).padStart(11, '0') + '\0', 124, 'ascii');
+  hdr.write('00000000000\0', 136, 'ascii');
+  hdr.write('00000000000\0', 148, 'ascii');
+  hdr[156] = 48; // 普通文件
+  hdr.write('ustar\0', 257, 'ascii');
+  let sum = 0;
+  for (const b of hdr) sum += b;
+  hdr.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'ascii'); // 校验和字段本身按空格计
+  return [hdr, body, Buffer.alloc((512 - (body.length % 512)) % 512)];
 }
+function makeTarGz(entries) {
+  const blocks = [];
+  for (const [name, text] of entries) blocks.push(...tarBlock(name, Buffer.from(text)));
+  blocks.push(Buffer.alloc(1024)); // 归档结束标记
+  return require('zlib').gzipSync(Buffer.concat(blocks));
+}
+const tar = makeTarGz([
+  ['repo-main/src/main.py', 'print(1)\n'],
+  ['repo-main/README.md', '# hi\n'],
+  ['../escape.txt', 'nope\n'],
+]);
+const dest = path.join(TMP, 'unpacked');
+fs.mkdirSync(dest, { recursive: true });
+remote.extractTar(tar, dest);
+ok('strips common top-level dir', fs.existsSync(path.join(dest, 'src', 'main.py')) && fs.existsSync(path.join(dest, 'README.md')));
+ok('rejects .. path traversal', !fs.existsSync(path.join(TMP, 'escape.txt')) && !fs.existsSync(path.join(dest, '..', 'escape.txt')));
+ok('rejects drive-letter entry', remote.tarEntries(makeTarGz([['C:/evil.txt', 'x\n']])).length === 0);
+ok('empty archive -> throws', (function () {
+  try { remote.extractTar(Buffer.alloc(1024), dest); return false; } catch (e) { return /no files/.test(e.message); }
+})());
+
+// 代理：Node 的 https 不读系统代理，需要自己探测才能与 Python 版行为一致
+const px = remote.parseProxy;
+ok('parses host:port', JSON.stringify(px('127.0.0.1:12000')) === JSON.stringify({ host: '127.0.0.1', port: 12000, noProxy: [] }));
+ok('parses scheme form', JSON.stringify(px('http://proxy.local:3128')) === JSON.stringify({ host: 'proxy.local', port: 3128, noProxy: [] }));
+ok('parses per-scheme form', px('http=10.0.0.1:8080;https=10.0.0.2:8443').host === '10.0.0.2');
+ok('ignores malformed value', px('not a url') === null && px('') === null && px(null) === null);
+ok('no_proxy suffix match', remote.matchNoProxy('example.com', 'api.example.com') && !remote.matchNoProxy('example.com', 'notexample.com'));
+ok('no_proxy wildcard', remote.matchNoProxy('*', 'anything.io'));
+ok('envProxy reads HTTPS_PROXY', (function () {
+  const p = remote.envProxy({ HTTPS_PROXY: 'http://127.0.0.1:12000' }, 'api.github.com');
+  return p && p.port === 12000;
+})());
+ok('envProxy honours NO_PROXY', remote.envProxy({ HTTPS_PROXY: 'http://127.0.0.1:12000', NO_PROXY: 'github.com' }, 'api.github.com') === null);
+ok('envProxy absent -> null', remote.envProxy({}, 'api.github.com') === null);
+
+// 本地假代理：验证 CONNECT 隧道能建立，并对非 200 应答报错
+function withFakeProxy(reply, fn) {
+  const srv = require('net').createServer((sock) => {
+    sock.once('data', (req) => sock.write(reply(req.toString('latin1'))));
+  });
+  return new Promise((resolve, reject) => {
+    srv.listen(0, '127.0.0.1', async () => {
+      try { resolve(await fn(srv.address().port)); }
+      catch (e) { reject(e); }
+      finally { srv.close(); }
+    });
+  });
+}
+
+(async function asyncChecks() {
+  ok('CONNECT tunnel established', await withFakeProxy(
+    (req) => (/^CONNECT api\.github\.com:443 /.test(req) ? 'HTTP/1.1 200 Connection established\r\n\r\n' : 'HTTP/1.1 400 Bad\r\n\r\n'),
+    async (port) => {
+      const sock = await remote.proxyTunnel({ host: '127.0.0.1', port }, 'api.github.com', 443);
+      const shape = sock && typeof sock.destroy === 'function';
+      sock.destroy();
+      return shape;
+    }
+  ));
+  // 统计口径：emoji 等增补平面字符按 1 个码点计，与 Python len(str) 对齐
+ok('cpLen counts code points', require(path.join(__dirname, '..', 'lib', 'util.js')).cpLen('a😀b') === 3);
+ok('CONNECT failure rejects', await withFakeProxy(
+    () => 'HTTP/1.1 403 Forbidden\r\n\r\n',
+    async (port) => {
+      try { await remote.proxyTunnel({ host: '127.0.0.1', port }, 'api.github.com', 443); return false; }
+      catch (e) { return /CONNECT failed with HTTP 403/.test(e.message); }
+    }
+  ));
+
+  // ── 收尾 ──
+  process.stdout.write('\n' + pass + ' passed, ' + failures.length + ' failed\n');
+  if (failures.length) {
+    process.stdout.write('failed: ' + failures.join(', ') + '\n');
+    process.exitCode = 1;
+  } else {
+    fs.rmSync(TMP, { recursive: true, force: true });
+  }
+})();

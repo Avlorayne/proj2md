@@ -104,20 +104,20 @@ function render(cfg, records, skipped, promptText, rootName, partLabel = '', pru
       const anchor = mdSlug(i + '. ' + r.rel);
       rows.push('| ' + i + ' | [' + cell + '](#' + anchor + ') | ' + r.language + ' | ' + r.lines + ' | ' + starts[idx] + ' |');
     });
-    return t('doc_index') + '\n' + rows.join('\n');
+    return t('doc_index') + rows.join('\n');
   };
   // ── 尾部各节 ──
   const tail = [];
-  if (fileSecs.length) tail.push(t('doc_source') + '\n\n' + fileSecs.join('\n\n'));
+  if (fileSecs.length) tail.push(t('doc_source') + fileSecs.join('\n\n'));
   if (skipped.length) {
     const items = skipped.slice(0, 50).map(([rel, reason]) => t('doc_skip_item', { path: mdCodeSpan(rel), reason }));
     if (skipped.length > 50) items.push(t('doc_more_skipped', { n: skipped.length - 50 }));
-    tail.push(t('doc_appendix_skipped') + '\n' + items.join('\n'));
+    tail.push(t('doc_appendix_skipped') + items.join('\n'));
   }
   if (prunedHidden.length) {
     const items = prunedHidden.slice(0, 30).map((d) => t('doc_hidden_item', { path: mdCodeSpan(d) }));
     if (prunedHidden.length > 30) items.push(t('doc_more_hidden', { n: prunedHidden.length - 30 }));
-    tail.push(t('doc_appendix_hidden') + '\n' + items.join('\n'));
+    tail.push(t('doc_appendix_hidden') + items.join('\n'));
   }
   tail.push(t('doc_end', {
     n, lines: fmtInt(totLines), tokens: fmtInt(totTokens),

@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/proj2md-py)](https://pypi.org/project/proj2md-py/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)  
 [![npm](https://img.shields.io/npm/v/proj2md)](https://www.npmjs.com/package/proj2md)  
-`Python 3.8+` · 零第三方依赖 · 单文件脚本 [proj2md](./proj2md.py) · v2.2.0  
+`Python 3.8+` · 零第三方依赖 · 单文件脚本 [proj2md](./proj2md.py) · v2.3.0  
 
 </div>
 
@@ -29,6 +29,7 @@
 - [🪟 配置文件](#-配置文件)
 - [📏 体积与 Token 预算](#-体积与-token-预算)
 - [💡 使用技巧与 FAQ](#-使用技巧与-faq)
+- [🧱 项目结构](#-项目结构)
 - [📜 许可证](#-许可证)
 
 ## ✨ 功能特性
@@ -46,6 +47,7 @@
 - 🈶 **编码友好**：自动识别 UTF-8 / GBK / Big5 / Latin-1；终端不支持中文时自动降级 ASCII
 - 🪟 **配置文件**：`proj2md.json` 持久化所有参数，`--init-config` 一键生成模板
 - 👀 **dry-run 预览**：先看会拼接哪些文件，再决定是否生成
+- 🌐 **远程仓库直出**：传入 GitHub 仓库链接即可下载指定版本的源码归档并生成合集，无需 `git clone`
 
 ## 🚀 快速开始
 
@@ -115,7 +117,13 @@ proj2md --split-tokens 60000        # 过大时切成多个分卷
 proj2md --lang en                   # 界面切英文
 proj2md --dry-run                   # 只预览，不写文件
 proj2md --init-config               # 生成配置模板
+proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clone，直接打包远程仓库
 ```
+
+> `--repo` 对 GitHub 使用源码归档接口；私有仓库可设置 `GITHUB_TOKEN` 或 `GH_TOKEN`。其他 Git 服务会尝试 `git archive --remote`，需服务端支持 `git-upload-archive`。远程快照只包含指定版本的已提交文件；不会包含本地未提交改动、提交历史、子模块内容或 LFS 大文件实体。
+>
+> 走代理时两端都会自动识别：Python 版沿用标准库的系统代理；Node 版读取 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`（大小写均可），在 Windows 上还会读取「Internet 选项」中的系统代理配置。
+
 ## ⚙️ 命令行参数
 
 **输入与输出**
@@ -123,6 +131,8 @@ proj2md --init-config               # 生成配置模板
 | 参数 | 说明 |
 |---|---|
 | `root`（位置参数） | 项目根目录，默认当前目录 |
+| `--repo <url>` | 远程 Git 仓库 URL；下载快照后打包，不执行 clone（不可与 `root` 同用） |
+| `--ref <ref>` | `--repo` 使用的分支、标签或提交引用（默认 `HEAD`） |
 | `-o, --output <file>` | 输出文件路径（默认 `project_bundle.md`） |
 | `--stdout` | 输出到标准输出，不写文件 |
 | `--clip` | 生成后复制到系统剪贴板 |
@@ -265,6 +275,39 @@ Token 为粗略估算（中文 ≈ 1.1 token/字，其他 ≈ 3.8 字符/token�
 - **Windows 终端中文乱码？** 脚本会自动把中文符号降级为 ASCII；也可以先执行 `chcp 65001` 切到 UTF-8。
 - **`--clip` 失败？** `pip install pyperclip`，或直接打开输出文件手动复制。
 - **想彻底自定义收录范围？** `--any-text` 收录所有文本文件，配合 `--include-hidden` 就是"全量模式"。
+
+## 🧱 项目结构
+
+同一套功能有两种实现，命令行参数、`proj2md.json` 配置格式、生成的 Markdown 结构完全一致，按手头的运行时任选其一即可。
+
+```
+proj2md/
+├── proj2md.py           # Python 版：单文件脚本，仅标准库（Python 3.8+）
+├── pyproject.toml       #   └─ 打包为 PyPI 包 proj2md-py，uv / pip 安装
+├── tests/               #   └─ 回归测试：python tests/test_proj2md.py
+├── README.md / README_EN.md
+└── proj2md-js/          # Node 版：纯 Node.js，零必需依赖（Node.js ≥ 14）
+    ├── bin/proj2md.js   #   └─ 发布为 npm 包 proj2md，npx / npm 安装
+    ├── lib/             #      discover / reader / render / i18n / remote …
+    ├── test/smoke.js    #      冒烟测试：npm test
+    └── package.json
+```
+
+| | Python 版 | Node 版 |
+|---|---|---|
+| 包名 | `proj2md-py`（PyPI） | `proj2md`（npm） |
+| 安装 | `uvx proj2md-py` / `uv tool install proj2md-py` / `pip install proj2md-py` | `npx proj2md` / `npm i -g proj2md` |
+| 运行时 | Python 3.8+，零第三方依赖 | Node.js ≥ 14，可选 `iconv-lite` |
+| 版本号位置 | [pyproject.toml](./pyproject.toml) | [proj2md-js/package.json](./proj2md-js/package.json) |
+
+两端输出逐字节一致（同一份项目 + 同一组参数），`tests/test_proj2md.py` 会校验版本号同步。
+
+```bash
+python tests/test_proj2md.py    # Python 版回归测试
+cd proj2md-js && npm test       # Node 版冒烟测试
+```
+
+> 发布新版本时两处版本号需同步递增：npm 由 GitHub Release 触发 [npm-publish.yml](./.github/workflows/npm-publish.yml) 自动发布（Trusted Publishing，无需 token）；PyPI 在本地执行 `uv build && uv publish`。
 
 ## 📜 许可证
 [MIT](./LICENSE) © 2025

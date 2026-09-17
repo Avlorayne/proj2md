@@ -1,6 +1,6 @@
 {
   "name": "proj2md",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "proj2md \u2013 merge a whole project into a single Markdown document for web-based AIs. Run via npx, no Python required.",
   "license": "MIT",
   "author": "Avlorayne",

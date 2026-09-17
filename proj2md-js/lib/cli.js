@@ -4,7 +4,7 @@ const path = require('path');
 const D = require('./defaults.js');
 const { t, setLang } = require('./i18n.js');
 const {
-  cprint, expandUser, estimateTokens, fmtSize, fmtInt, tokenHint,
+  cprint, expandUser, estimateTokens, cpLen, fmtSize, fmtInt, tokenHint,
   baseNameOf, stemOf, extOf,
 } = require('./util.js');
 const { discover } = require('./discover.js');
@@ -12,6 +12,7 @@ const { readText } = require('./reader.js');
 const { buildTree, render } = require('./render.js');
 const { copyClipboard } = require('./clipboard.js');
 const { buildConfig } = require('./config.js');
+const { fetchRemoteRepo, removeTree } = require('./remote.js');
 class UsageError extends Error {}
 // ─────────────────────────── 参数解析 ───────────────────────────
 const BOOL_FLAGS = new Set([
@@ -19,10 +20,10 @@ const BOOL_FLAGS = new Set([
   'no_smart_order', 'clip', 'stdout', 'dry_run', 'no_config', 'init_config', 'quiet', 'version', 'help',
 ]);
 const GREEDY_OPTS = new Set(['ext', 'only_ext', 'exclude_dir', 'exclude_file', 'exclude_pattern', 'include_pattern']);
-const VALUE_OPTS = new Set(['output', 'lang', 'max_file_lines', 'max_file_kb', 'max_total_kb', 'split_tokens', 'prompt', 'prompt_file', 'config']);
+const VALUE_OPTS = new Set(['output', 'repo', 'ref', 'lang', 'max_file_lines', 'max_file_kb', 'max_total_kb', 'split_tokens', 'prompt', 'prompt_file', 'config']);
 const SHORT_MAP = { '-h': 'help', '-o': 'output' };
 const USAGE_PARTS = [
-  '[-h]', '[-o OUTPUT]', '[--ext EXT [EXT ...]]', '[--only-ext EXT [EXT ...]]',
+  '[-h]', '[--repo URL]', '[--ref REF]', '[-o OUTPUT]', '[--ext EXT [EXT ...]]', '[--only-ext EXT [EXT ...]]',
   '[--any-text]', '[--include-hidden]', '[--exclude-dir DIR [DIR ...]]',
   '[--exclude-file NAME [NAME ...]]', '[--exclude-pattern PAT [PAT ...]]',
   '[--include-pattern PAT [PAT ...]]', '[--lang {auto,zh,en}]', '[--line-numbers]',
@@ -45,6 +46,8 @@ function usageLine() {
 }
 const OPTIONS = [
   ['-o, --output OUTPUT', 'arg_output', { out: D.DEFAULT_OUTPUT }],
+  ['--repo URL', 'arg_repo'],
+  ['--ref REF', 'arg_ref'],
   ['--ext EXT [EXT ...]', 'arg_ext'],
   ['--only-ext EXT [EXT ...]', 'arg_only_ext'],
   ['--any-text', 'arg_any_text'],
@@ -181,7 +184,7 @@ function buildRecords(cfg, candidates) {
     }
     const { text, enc, err } = readText(p);
     if (text === null) { skipped.push([rel, t('skip_read_err', { err })]); continue; }
-    if (budget && records.length && total + text.length > budget) {
+    if (budget && records.length && total + cpLen(text) > budget) {
       skipped.push([rel, t('skip_over_budget')]); continue;
     }
     let txt = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -201,10 +204,10 @@ function buildRecords(cfg, candidates) {
       language: require('./util.js').langOf(rel),
       encoding: enc, content: txt,
       lines: txt.split('\n').length - 1,
-      chars: txt.length, nbytes: size,
+      chars: cpLen(txt), nbytes: size,
       truncated, origLines,
     });
-    total += txt.length;
+    total += cpLen(txt);
   }
   return { records, skipped };
 }
@@ -234,7 +237,7 @@ function printSummary(outPath, records, skipped, text, prunedHidden) {
   cprint(t('sum_tip1'));
   cprint(t('sum_tip2'));
 }
-function dryRunReport(cfg, records, skipped, prunedHidden) {
+function dryRunReport(cfg, records, skipped, prunedHidden, rootName) {
   const tot = records.reduce((s, r) => s + estimateTokens(r.content), 0);
   prunedHidden = prunedHidden || [];
   cprint(t('dry_preview', {
@@ -244,7 +247,7 @@ function dryRunReport(cfg, records, skipped, prunedHidden) {
   }));
   if (cfg.showTree) {
     cprint();
-    cprint(buildTree(records, path.basename(cfg.root)).replace(/\n$/, ''));
+    cprint(buildTree(records, rootName || path.basename(cfg.root)).replace(/\n$/, ''));
   }
   cprint();
   records.forEach((r, idx) => {
@@ -270,7 +273,7 @@ function dryRunReport(cfg, records, skipped, prunedHidden) {
 // ─────────────────────────── 主流程 ───────────────────────────
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } }
 function isFile(p) { try { return fs.statSync(p).isFile(); } catch (e) { return false; } }
-function main(argv) {
+async function main(argv) {
   let args;
   try { args = parseArgs(argv); }
   catch (e) {
@@ -282,11 +285,38 @@ function main(argv) {
   }
   if (args.help) { printHelp(); return 0; }
   if (args.version) { cprint(D.TOOL + ' v' + D.VERSION); return 0; }
-  const root = path.resolve(expandUser(args._[0] || '.'));
+  if (args.repo && args._[0]) {
+    cprint(t('err_repo_and_root'));
+    return 2;
+  }
+  // 远程模式下配置模板会写进随后被删除的临时快照，直接在下载前拦下
+  if (args.repo && args.init_config) {
+    cprint(t('err_init_config_repo'));
+    return 2;
+  }
+  let remote = null;
+  let root, rootName;
+  if (args.repo) {
+    try {
+      remote = await fetchRemoteRepo(args.repo, args.ref);
+      root = remote.root;
+      rootName = remote.label;
+    } catch (e) {
+      cprint(t('err_repo_fetch', { err: e.message || String(e) }));
+      return 1;
+    }
+  } else {
+    root = path.resolve(expandUser(args._[0] || '.'));
+    rootName = path.basename(root);
+  }
+  const finish = (code) => {
+    if (remote) removeTree(remote.tmp);
+    return code;
+  };
   const quiet = Boolean(args.quiet);
   const cfgPath = args.config !== undefined
     ? path.resolve(expandUser(args.config))
-    : path.join(root, D.CONFIG_FILENAME);
+    : remote ? path.join(remote.tmp, D.CONFIG_FILENAME) : path.join(root, D.CONFIG_FILENAME);
   // ── 1. 先静默读取配置文件（界面语言可能写在里面），暂存加载结果 ──
   let data = {}, loadState = null; // null / ['ok'] / ['bad_root'] / ['error', exc]
   if (!args.no_config && isFile(cfgPath)) {
@@ -303,25 +333,25 @@ function main(argv) {
     else if (loadState[0] === 'bad_root') cprint(t('warn_config_parse', { err: t('err_config_root') }));
     else cprint(t('warn_config_parse', { err: loadState[1].message }));
   }
-  if (!isDir(root)) { cprint(t('err_root_not_dir', { root })); return 1; }
+  if (!isDir(root)) { cprint(t('err_root_not_dir', { root })); return finish(1); }
   if (args.init_config) {
-    if (fs.existsSync(cfgPath)) { cprint(t('err_config_exists', { path: cfgPath })); return 1; }
+    if (fs.existsSync(cfgPath)) { cprint(t('err_config_exists', { path: cfgPath })); return finish(1); }
     fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(D.CONFIG_TEMPLATE, null, 2) + '\n', 'utf8');
     cprint(t('ok_config_created', { path: cfgPath }));
     cprint(t('config_hint'));
-    return 0;
+    return finish(0);
   }
   const cfg = buildConfig(root, args, data, cfgPath);
   const disc = discover(cfg);
   const candidates = disc.found, prunedHidden = disc.prunedHidden;
-  if (!candidates.length) { cprint(t('err_no_files')); return 1; }
+  if (!candidates.length) { cprint(t('err_no_files')); return finish(1); }
   if (cfg.smartOrder) candidates.sort(orderKey);
   const built = buildRecords(cfg, candidates);
   const records = built.records, skipped = built.skipped;
-  if (!records.length) { cprint(t('err_all_skipped')); return 1; }
+  if (!records.length) { cprint(t('err_all_skipped')); return finish(1); }
   const promptText = loadPrompt(args);
-  if (args.dry_run) { dryRunReport(cfg, records, skipped, prunedHidden); return 0; }
+  if (args.dry_run) { dryRunReport(cfg, records, skipped, prunedHidden, rootName); return finish(0); }
   // ── 分卷模式 ──
   if (cfg.splitTokens && !args.stdout) {
     const chunks = []; let cur = [], curTok = 0;
@@ -341,7 +371,7 @@ function main(argv) {
         const label = t('part_label', { i, n: chunks.length });
         const sk = i === chunks.length ? skipped : [];
         const ph = i === chunks.length ? prunedHidden : [];
-        const txt = render(cfg, chunk, sk, promptText, path.basename(root), label, ph);
+        const txt = render(cfg, chunk, sk, promptText, rootName, label, ph);
         const p = path.join(path.dirname(base), stem + '.part' + i + suf);
         fs.writeFileSync(p, txt, 'utf8');
         if (!quiet) {
@@ -352,11 +382,11 @@ function main(argv) {
         }
       });
       if (!quiet) cprint(t('split_hint', { n: cfg.splitTokens, total: chunks.length }));
-      return 0;
+      return finish(0);
     }
   }
-  const text = render(cfg, records, skipped, promptText, path.basename(root), '', prunedHidden);
-  if (args.stdout) { process.stdout.write(text); return 0; }
+  const text = render(cfg, records, skipped, promptText, rootName, '', prunedHidden);
+  if (args.stdout) { process.stdout.write(text); return finish(0); }
   const out = path.resolve(cfg.output);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, text, 'utf8');
@@ -367,12 +397,12 @@ function main(argv) {
     if (res.ok) cprint(t('ok_clipboard', { how: res.how }));
     else cprint(t('err_clipboard'));
   }
-  return 0;
+  return finish(0);
 }
-function cli() {
+async function cli() {
   process.on('SIGINT', () => { cprint(t('cancelled')); process.exit(130); });
   try {
-    process.exitCode = main();
+    process.exitCode = await main();
   } catch (e) {
     process.stderr.write(String((e && e.stack) || e) + '\n');
     process.exitCode = 1;
