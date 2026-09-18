@@ -4,6 +4,16 @@ const { normalizeExt, expandUser } = require('./util.js');
 class Config {
   constructor(fields) { Object.assign(this, fields); }
 }
+/** ★ 修复（P2）：允许 --ext=py,md / --ext py,md 这类逗号写法（与空格分隔等价）。 */
+function expandCsv(vals) {
+  const out = [];
+  for (const v of vals || []) {
+    for (const s of String(v).split(',')) {
+      if (s.trim()) out.push(s.trim());
+    }
+  }
+  return out;
+}
 /** 合并优先级：命令行参数 > 配置文件 > 内置默认（与 Python 版一致）。 */
 function buildConfig(root, args, data, cfgPath) {
   data = data || {};
@@ -16,9 +26,9 @@ function buildConfig(root, args, data, cfgPath) {
   const cfgExts = data.exts;
   if (Array.isArray(cfgExts) && cfgExts.length) exts = new Set(cfgExts.map(normalizeExt));
   if (args.only_ext && args.only_ext.length) {
-    exts = new Set(args.only_ext.map(normalizeExt));
+    exts = new Set(expandCsv(args.only_ext).map(normalizeExt));     // ★
   } else if (args.ext && args.ext.length) {
-    for (const e of args.ext) exts.add(normalizeExt(e));
+    for (const e of expandCsv(args.ext)) exts.add(normalizeExt(e)); // ★
   }
   const mergeSet = (defaults, key, cliVal) => {
     const s = new Set(defaults);

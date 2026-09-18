@@ -30,8 +30,17 @@ function discover(cfg) {
   const root = cfg.root;
   const outAbs = _realish(path.resolve(cfg.output));
   const cfgAbs = cfg.configPath ? _realish(path.resolve(cfg.configPath)) : null;
-  const selfAbs = new Set([_realish(__filename)]);
+  // 与 Python 版对齐：discover / cli / 运行入口三者都排除，
+  // 否则把包目录当项目跑时会把自己的源码拼进合集。
+  const selfAbs = new Set([
+    _realish(__filename),
+    _realish(path.join(__dirname, 'cli.js')),
+  ]);
   if (process.argv[1]) selfAbs.add(_realish(path.resolve(process.argv[1])));
+  // 目录黑名单统一小写后拆分：精确匹配走 Set（O(1)），通配模式（*.egg-info）单独列表。
+  const excludeDirs = new Set([...cfg.excludeDirs].map((p) => String(p).toLowerCase()));
+  const excludeGlobs = [...excludeDirs].filter((p) => p.includes('*'));
+  const excludeExact = new Set([...excludeDirs].filter((p) => !p.includes('*')));
   const found = [];
   const prunedHidden = [];
   const walk = (dir, relBase) => {
@@ -40,7 +49,17 @@ function discover(cfg) {
     catch (e) { return; }
     const dirs = [], files = [];
     for (const e of entries) {
-      if (e.isDirectory()) dirs.push(e.name);        // 符号链接目录不跟随（同 os.walk 默认）
+      if (e.isSymbolicLink()) {
+        // 链接一律不递归（Python 侧 os.walk 不跟随符号链接，并在 discover 里
+        // 显式跳过 junction——跟随会让子树被收录两遍，成环时还会无限递归）。
+        // 文件链接照常收录，与 Python 一致；断链/无权限时由读取阶段报「无法读取」。
+        let st = null;
+        try { st = fs.statSync(path.join(dir, e.name)); } catch (err) { st = null; }
+        if (st && st.isDirectory()) continue;
+        files.push(e.name);
+        continue;
+      }
+      if (e.isDirectory()) dirs.push(e.name);
       else if (e.isFile()) files.push(e.name);
     }
     dirs.sort(); files.sort();
@@ -50,7 +69,10 @@ function discover(cfg) {
       const relDir = relBase ? relBase + '/' + d : d;
       if (_dirMayBeIncluded(relDir, cfg.includePatterns)) { kept.push(d); continue; }
       if (cfg.excludeHidden && d.startsWith('.')) { prunedHidden.push(relDir); continue; }
-      if (cfg.excludeDirs.has(d.toLowerCase())) continue;
+      const dLower = d.toLowerCase();
+      // 支持通配目录名（如 "*.egg-info"）
+      if (excludeExact.has(dLower)) continue;
+      if (excludeGlobs.some((pat) => fnmatch(dLower, pat))) continue;
       kept.push(d);
     }
     // ── 当前目录文件（与 os.walk 顺序一致：先本层文件，再递归子目录）──

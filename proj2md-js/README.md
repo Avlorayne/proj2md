@@ -39,6 +39,10 @@ npx proj2md --prompt "帮我找出潜在 bug" --clip
 
 # 不 clone，直接打包远程仓库（GitHub 走源码归档，其余服务尝试 git archive --remote）
 npx proj2md --repo https://github.com/owner/repo --ref main -o bundle.md
+
+# 反向还原：把合集 / AI 回复写回真实文件（先预览，再带差异与备份写回）
+npx proj2md --restore bundle.md myproject --dry-run
+npx proj2md --restore --clip myproject --diff --backup
 ```
 
 全局安装后直接使用 `proj2md` 命令：
@@ -75,7 +79,7 @@ proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clon
 
 | 参数 | 说明 |
 | --- | --- |
-| `[root]` | 项目根目录（默认当前目录） |
+| `[root]` | 项目根目录（默认当前目录）；`--restore` 时改为要还原的 Markdown 合集（`-` 表示标准输入） |
 | `--repo URL` / `--ref REF` | 远程 Git 仓库 URL / 其分支、标签或提交引用（默认 `HEAD`）；不执行 clone，不能与 `[root]` 同用 |
 | `-o, --output <file>` | 输出文件（默认 `project_bundle.md`） |
 | `--ext <e...>` / `--only-ext <e...>` | 追加扩展名 / 只用这些扩展名 |
@@ -89,10 +93,12 @@ proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clon
 | `--max-total-kb KB` | 合集总预算，超出后停止追加 |
 | `--split-tokens N` | 按 token 预估切成多个 `.md` 分卷 |
 | `--prompt "..."` / `--prompt-file FILE` | 附带需求，置于合集最前 |
-| `--clip` | 生成后复制到系统剪贴板 |
+| `--clip` | 生成后复制到系统剪贴板；不指定 `-o` 且输出文件不存在时只复制不建文件（已存在则更新）；`--restore` 时改为从剪贴板读取要还原的 Markdown |
 | `--stdout` | 输出到标准输出而不写文件 |
 | `--dry-run` | 只预览将拼接的文件与统计 |
 | `--config PATH` / `--no-config` / `--init-config` | 指定 / 忽略 / 生成配置文件 |
+| `--restore` / `[target]` | 反向还原模式：把合集 / AI 回复写回真实文件（新建 / 更新 / 跳过未变更），`[target]` 为还原目标目录（默认当前目录） |
+| `--list` / `--json` / `--diff` / `--backup` / `--skip-existing` / `--allow-truncated` / `--keep-encoding` / `--strip-linenum` | 还原模式参数：清单 / JSON / 差异 / 备份 / 不动已有文件 / 允许截断文件 / 按原编码写回 / 剥离行号前缀 |
 | `--lang {auto,zh,en}` | 界面语言（默认 `auto`，跟随系统） |
 | `--quiet` | 静默模式，只输出结果路径 |
 | `-h, --help` / `--version` | 帮助 / 版本号 |
@@ -135,7 +141,7 @@ proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clon
 - **编码识别**：`utf-8-sig → utf-8 → gbk → big5 → latin-1`，自动识别，无需手动指定；GBK/Big5 依赖可选依赖 [`iconv-lite`](https://www.npmjs.com/package/iconv-lite)（缺失时自动降级为 latin-1，其余功能不受影响）。
 - **智能排序**：`README` / 项目清单（`package.json`、`pyproject.toml`、`requirements.txt`…）/ 入口文件（`main`、`app`、`index`…）优先，其余按路径排序。
 - **剪贴板**：Windows 用 PowerShell / `clip`，macOS 用 `pbcopy`，Linux 用 `wl-copy` / `xclip` / `xsel`，全部走系统原生命令，无需第三方依赖。
-- **输出**：与 Python 版 `proj2md.py` 结构完全一致，可无缝互换。
+- **输出**：与 Python 版（`proj2md-py/`）结构完全一致，可无缝互换。
 
 ## 🧪 开发与发布
 
@@ -147,7 +153,7 @@ npm publish                           # 发布到 npm（账号开启 2FA 时会�
 ```
 
 > 本目录的 `VERSION`（`lib/defaults.js`）与 `package.json` 的 `version` 必须与 Python 版 `pyproject.toml` 保持一致，
-> 仓库根目录的 `tests/test_proj2md.py` 会校验这一点。日常提交由 GitHub Release 触发自动发布，无需手动 `npm publish`。
+> Python 端的 `proj2md-py/tests/test_proj2md.py` 会校验这一点。日常提交由 GitHub Release 触发自动发布，无需手动 `npm publish`。
 
 发布后任何人即可直接运行：
 

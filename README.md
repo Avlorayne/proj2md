@@ -1,6 +1,6 @@
 <div align="center">
 
-# proj2md.py
+# proj2md
 **简体中文** | [English](./README_EN.md)  
   
 🗂 **项目源码一键拼接工具** —— 把整个项目合并成一份 Markdown，直接投喂给网页端 AI  
@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/proj2md-py)](https://pypi.org/project/proj2md-py/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)  
 [![npm](https://img.shields.io/npm/v/proj2md)](https://www.npmjs.com/package/proj2md)  
-`Python 3.8+` · 零第三方依赖 · 单文件脚本 [proj2md](./proj2md.py) · v2.3.2
+`Python 3.8+` · 零第三方依赖 · Python 包 [proj2md-py/](./proj2md-py) · Node 包 [proj2md-js/](./proj2md-js) · v2.4.1
 
 </div>
 
@@ -25,6 +25,7 @@
 - [🙈 忽略规则](#-忽略规则)
 - [🧠 智能排序](#-智能排序)
 - [📄 生成文档结构](#-生成文档结构)
+- [🔄 反向还原](#-反向还原-restore)
 - [🌐 多语言界面](#-多语言界面)
 - [🪟 配置文件](#-配置文件)
 - [📏 体积与 Token 预算](#-体积与-token-预算)
@@ -48,6 +49,7 @@
 - 🪟 **配置文件**：`proj2md.json` 持久化所有参数，`--init-config` 一键生成模板
 - 👀 **dry-run 预览**：先看会拼接哪些文件，再决定是否生成
 - 🌐 **远程仓库直出**：传入 GitHub 仓库链接即可下载指定版本的源码归档并生成合集，无需 `git clone`
+- 🔄 **反向还原**（v2.4.1）：`--restore` 把合集 / AI 回复写回真实文件，形成「打包 → 投喂 → 回写」完整闭环
 
 ## 🚀 快速开始
 
@@ -83,8 +85,9 @@ proj2md --prompt "帮我找出潜在 bug 并给出修复建议"
 无需安装，克隆仓库后直接运行（唯一可选依赖 `pyperclip`，仅 `--clip` 需要）：
 
 ```bash
-python proj2md.py
-python proj2md.py /path/to/project --clip
+cd proj2md-py
+python -m proj2md
+python -m proj2md /path/to/project --clip
 ```
 
 ### 方式三：npx / npm（Node.js 版，无需 Python）
@@ -108,7 +111,7 @@ npm install -g proj2md
 
 ## 📖 常用示例
 
-> 以下示例使用安装后的 `proj2md` 命令；用源码运行的话，把 `proj2md` 换成 `python proj2md.py` 即可。
+> 以下示例使用安装后的 `proj2md` 命令；用源码运行的话，在 `proj2md-py/` 目录下把 `proj2md` 换成 `python -m proj2md` 即可。
 
 ```bash
 proj2md --only-ext py md            # 只拼接 Python 与 Markdown
@@ -125,6 +128,7 @@ proj2md --lang en                   # 界面切英文
 proj2md --dry-run                   # 只预览，不写文件
 proj2md --init-config               # 生成配置模板
 proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clone，直接打包远程仓库
+proj2md --restore bundle.md myproject --dry-run  # 反向还原：先预览要写回哪些文件
 ```
 
 > `--repo` 对 GitHub 使用源码归档接口；私有仓库可设置 `GITHUB_TOKEN` 或 `GH_TOKEN`。其他 Git 服务会尝试 `git archive --remote`，需服务端支持 `git-upload-archive`。远程快照只包含指定版本的已提交文件；不会包含本地未提交改动、提交历史、子模块内容或 LFS 大文件实体。
@@ -137,12 +141,12 @@ proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clon
 
 | 参数 | 说明 |
 |---|---|
-| `root`（位置参数） | 项目根目录，默认当前目录 |
+| `root`（位置参数） | 项目根目录，默认当前目录；`--restore` 时改为要还原的 Markdown 合集（`-` 表示标准输入） |
 | `--repo <url>` | 远程 Git 仓库 URL；下载快照后打包，不执行 clone（不可与 `root` 同用） |
 | `--ref <ref>` | `--repo` 使用的分支、标签或提交引用（默认 `HEAD`） |
 | `-o, --output <file>` | 输出文件路径（默认 `project_bundle.md`） |
 | `--stdout` | 输出到标准输出，不写文件 |
-| `--clip` | 生成后复制到系统剪贴板 |
+| `--clip` | 生成后复制到系统剪贴板；不指定 `-o` 且输出文件不存在时只复制不建文件（已存在则更新）；`--restore` 时改为从剪贴板读取要还原的 Markdown |
 
 **文件范围**
 
@@ -187,6 +191,35 @@ proj2md --repo https://github.com/owner/repo --ref main -o bundle.md  # 不 clon
 | `--dry-run` | 只预览将拼接的文件与统计 |
 | `--quiet` | 静默模式，只输出结果路径 |
 | `--version` / `-h, --help` | 版本号 / 帮助 |
+
+## 🔄 反向还原（--restore）
+
+`--restore` 是 `proj2md` 的反向操作：读取 proj2md 生成的 Markdown 合集（也兼容 AI 遵循「`### 序号. 相对路径` + 围栏代码块」约定的回复），把每个文件写回磁盘 —— **文件不存在则新建、内容相同则跳过、内容不同则覆盖更新**，形成「打包 → 投喂 AI → 回写」的完整闭环。
+
+```bash
+# ① 生成合集时用 --prompt 锁定 AI 的输出格式（解析稳定性的关键）
+proj2md myproject --clip --prompt "请只输出被修改/新增文件的完整内容，保持原格式：### 序号. 相对路径 + 同语言围栏代码块"
+# ② AI 回复后直接复制 → 从剪贴板回写
+proj2md --restore --clip myproject --dry-run        # 先预览动作
+proj2md --restore --clip myproject --diff --backup  # 看差异并备份旧文件
+git diff                                            # 人工复核
+```
+
+**还原模式参数**
+
+| 参数 | 说明 |
+|---|---|
+| `target`（第二个位置参数） | 还原目标目录（默认当前目录，不存在则自动创建；仅 `--restore` 模式有效） |
+| `--list` / `--json` | 仅列出解析到的文件清单 / 以 JSON 输出解析结果，均不写盘 |
+| `--diff` / `--max-diff <n>` | 对将更新的文件打印 unified diff（默认最多 120 行） |
+| `--backup` | 覆盖前把旧文件改名为 `*.bak-时间戳` |
+| `--skip-existing` | 目标已存在的文件一律不动 |
+| `--allow-truncated` | 允许写回生成时被截断的文件（默认跳过，防止半截代码污染项目） |
+| `--strip-linenum <auto\|on\|off>` | 剥离 `--line-numbers` 行号前缀（auto 需全部行带前缀且行号连续才剥离，几乎零误伤） |
+| `--keep-encoding` | 按合集元信息中的原始编码（如 `gbk`）写回，失败自动回退 UTF-8 |
+| `--include-pattern` / `--exclude-pattern` | 只还原 / 排除匹配的路径（fnmatch，`*` 可跨目录层级） |
+
+**安全护栏**：拒绝绝对路径 / 盘符 / `..`（解析后写盘前还会二次校验必须位于目标目录内）；附录里「未包含的文件」无法还原，仅作提示列出。`--restore` 不能与 `--repo` / `--init-config` 同用；还原模式的界面语言只由 `--lang` / 系统探测决定，不读取 `proj2md.json`。
 
 ## 🙈 忽略规则
 
@@ -289,14 +322,15 @@ Token 为粗略估算（中文 ≈ 1.1 token/字，其他 ≈ 3.8 字符/token�
 
 ```
 proj2md/
-├── proj2md.py           # Python 版：单文件脚本，仅标准库（Python 3.8+）
-├── pyproject.toml       #   └─ 打包为 PyPI 包 proj2md-py，uv / pip 安装
-├── tests/               #   └─ 回归测试：python tests/test_proj2md.py
-├── README.md / README_EN.md
-└── proj2md-js/          # Node 版：纯 Node.js，零必需依赖（Node.js ≥ 14）
-    ├── bin/proj2md.js   #   └─ 发布为 npm 包 proj2md，npx / npm 安装
-    ├── lib/             #      discover / reader / render / i18n / remote …
-    ├── test/smoke.js    #      冒烟测试：npm test
+├── proj2md-py/              # Python 版：标准库包（Python 3.8+），打包为 PyPI 包 proj2md-py
+│   ├── proj2md/             #   └─ cli / config / discover / render / restore / remote / i18n / util …
+│   ├── tests/               #      回归测试：python -m unittest discover tests
+│   └── pyproject.toml       #      uv / pip 安装；终端命令 proj2md
+├── README.md / README_EN.md / LICENSE
+└── proj2md-js/              # Node 版：纯 Node.js，零必需依赖（Node.js ≥ 14）
+    ├── bin/proj2md.js       #   └─ 发布为 npm 包 proj2md，npx / npm 安装
+    ├── lib/                 #      discover / reader / render / restore / i18n / remote …
+    ├── test/smoke.js        #      冒烟测试：npm test
     └── package.json
 ```
 
@@ -305,13 +339,13 @@ proj2md/
 | 包名 | `proj2md-py`（PyPI） | `proj2md`（npm） |
 | 安装 | `uvx proj2md-py` / `uv tool install proj2md-py` / `pip install proj2md-py` | `npx proj2md` / `npm i -g proj2md` |
 | 运行时 | Python 3.8+，零第三方依赖 | Node.js ≥ 14，可选 `iconv-lite` |
-| 版本号位置 | [pyproject.toml](./pyproject.toml) | [proj2md-js/package.json](./proj2md-js/package.json) |
+| 版本号位置 | [proj2md-py/pyproject.toml](./proj2md-py/pyproject.toml) | [proj2md-js/package.json](./proj2md-js/package.json) |
 
-两端输出逐字节一致（同一份项目 + 同一组参数），`tests/test_proj2md.py` 会校验版本号同步。
+两端输出逐字节一致（同一份项目 + 同一组参数），`proj2md-py/tests/test_proj2md.py` 会校验版本号同步。
 
 ```bash
-python tests/test_proj2md.py    # Python 版回归测试
-cd proj2md-js && npm test       # Node 版冒烟测试
+cd proj2md-py && python -m unittest discover tests   # Python 版回归测试
+cd proj2md-js && npm test                            # Node 版冒烟测试
 ```
 
 > 发布新版本时两处版本号需同步递增：npm 由 GitHub Release 触发 [npm-publish.yml](./.github/workflows/npm-publish.yml) 自动发布（Trusted Publishing，无需 token）；PyPI 由 [pypi-publish.yml](./.github/workflows/pypi-publish.yml) 通过 Trusted Publishing 自动发布。首次使用前需在 PyPI 的 `proj2md-py` 项目设置里添加该 GitHub Actions Trusted Publisher。若必须本地发布，请使用 PyPI API Token（如 `uv publish --token "$PYPI_TOKEN"`），不要再使用账号密码。

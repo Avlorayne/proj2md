@@ -49,7 +49,7 @@ function buildTree(records, rootLabel) {
 function render(cfg, records, skipped, promptText, rootName, partLabel = '', prunedHidden = null) {
   const n = records.length;
   const totLines = records.reduce((s, r) => s + r.lines, 0);
-  const totChars = records.reduce((s, r) => s + r.chars, 0);
+  const totSize = records.reduce((s, r) => s + Buffer.byteLength(r.content, 'utf8'), 0); // ★ 修复（P0-1）：字节口径（原为字符数，与控制台报告不一致）
   const totTokens = records.reduce((s, r) => s + estimateTokens(r.content), 0);
   const now = localNow();
   prunedHidden = prunedHidden || [];
@@ -62,7 +62,7 @@ function render(cfg, records, skipped, promptText, rootName, partLabel = '', pru
       ? t('doc_meta_files_skipped', { n, skipped: skipped.length })
       : t('doc_meta_files', { n })),
     '- ' + t('doc_meta_lines', { lines: fmtInt(totLines) }),
-    '- ' + t('doc_meta_size', { size: fmtSize(totChars) }),
+    '- ' + t('doc_meta_size', { size: fmtSize(totSize) }), // ★
     '- ' + t('doc_meta_tokens', { tokens: fmtInt(totTokens) }),
   ];
   head.push(t('doc_title', { root: rootName, label: partLabel }) + '\n\n' + meta.join('\n'));

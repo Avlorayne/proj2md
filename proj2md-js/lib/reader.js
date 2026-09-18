@@ -20,11 +20,13 @@ function readText(absPath) {
     const hadBom = raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf;
     return { text, enc: hadBom ? 'utf-8-sig' : 'utf-8', err: null };
   } catch (e) { /* fall through */ }
-  // gbk / big5（需要 iconv-lite；round-trip 校验避免误判）
+  // gbk / big5（需要 iconv-lite）
+  // 判定标准与 Python 一致：能 decode 就接受，不做 decode→encode round-trip。
+  // GBK 存在多对一映射区段，round-trip 会失败，导致同一份字节 Python 判为 gbk
+  // 而 Node 降级 latin-1，两端「编码」字段与正文内容分叉。
   for (const enc of ['gbk', 'big5']) {
     if (iconv && iconv.encodingExists(enc)) {
-      const text = iconv.decode(raw, enc);
-      if (iconv.encode(text, enc).equals(raw)) return { text, enc, err: null };
+      return { text: iconv.decode(raw, enc), enc, err: null };
     }
   }
   // latin-1 永不失败（与 Python 行为一致）

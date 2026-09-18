@@ -1,0 +1,492 @@
+"""proj2md 多语言系统（zh / en）：语言解析优先级 --lang > 配置文件 > 系统探测 > 英文兜底。"""
+import locale
+import os
+import sys
+import warnings
+
+# ═══════════════════════ 多语言系统（zh / en）═══════════════════════
+# 语言解析优先级：--lang 参数 > 配置文件 language 字段 > 系统自动探测 > 英文兜底
+SUPPORTED_LANGS = ("zh", "en")
+LANG_TEXTS = {
+    "zh": {
+        # ── 命令行帮助 ──
+        "cli_desc": "项目源码一键拼接工具：把整个项目合并成单个 Markdown 文档，方便投喂给网页端 AI。",
+        "cli_epilog": """\
+忽略规则（按顺序生效）:
+  隐藏目录(默认开) → 目录黑名单 → 文件黑名单 → 通配符黑名单 → 扩展名白名单
+  ※ --include-pattern 优先级最高，可穿透所有忽略规则（含隐藏目录）
+常用示例:
+  python proj2md.py                                # 拼接当前目录 -> project_bundle.md
+  python proj2md.py myproject -o bundle.md         # 指定项目目录与输出文件
+  python proj2md.py --only-ext py md               # 只拼接 Python 与 Markdown 文件
+  python proj2md.py --ext proto graphql            # 在默认范围上追加扩展名
+  python proj2md.py --exclude-dir tests docs       # 额外排除某些目录
+  python proj2md.py --include-pattern "src/*"      # 强制包含匹配的文件（优先级最高）
+  python proj2md.py --include-hidden               # 不忽略以 . 开头的文件夹
+  python proj2md.py --include-pattern ".github/*"  # 只捞回某个隐藏目录的内容
+  python proj2md.py --lang en                      # 界面切英文（auto/zh/en）
+  python proj2md.py --line-numbers                 # 正文带行号，AI 引用更精准
+  python proj2md.py --max-file-lines 300           # 单文件超过 300 行则截断
+  python proj2md.py --max-total-kb 200             # 总体积预算 200KB
+  python proj2md.py --split-tokens 60000           # 体积过大时自动切成多个 .md 分卷
+  python proj2md.py --prompt "帮我审查代码" --clip # 附带需求并复制到剪贴板
+  python proj2md.py --dry-run                      # 预览将拼接哪些文件
+  python proj2md.py --init-config                  # 生成 proj2md.json 配置模板
+反向还原（--restore）:
+  python proj2md.py --restore bundle.md            # 把合集还原到当前目录
+  python proj2md.py --restore bundle.md myproject  # 还原到指定目录
+  python proj2md.py --restore bundle.md --dry-run  # 只预览动作，不写盘
+  python proj2md.py --restore bundle.md --diff --backup   # 打印差异并备份旧文件
+  python proj2md.py --restore reply.md --include-pattern "src/*"   # 只还原 src 下文件
+  python proj2md.py --restore --clip myproject     # 从剪贴板读取 AI 回复并写回
+  cat bundle.md | python proj2md.py --restore - myproject  # 从标准输入读取
+说明:
+  通配符规则同 fnmatch，* 可跨目录层级（如 "src/*" 匹配 src 下所有文件）。""",
+        "arg_help": "显示本帮助信息并退出",
+        "arg_root": "项目根目录（默认当前目录）；--restore 时改为要还原的 Markdown 合集（'-' 表示标准输入）",
+        "arg_target": "还原目标目录（仅 --restore 模式；默认当前目录，不存在则自动创建）",
+        "arg_repo": "远程 Git 仓库 URL（不 clone；GitHub 下载源码归档，其他服务尝试 git archive）",
+        "arg_ref": "远程仓库的分支、标签或提交引用（默认 HEAD）",
+        "arg_output": "输出文件路径（默认 {out}）",
+        "arg_ext": "在默认范围上追加扩展名，如 --ext py md",
+        "arg_only_ext": "只包含指定扩展名（替换默认范围）",
+        "arg_any_text": "包含所有非二进制文本文件（忽略扩展名白名单）",
+        "arg_include_hidden": "不忽略以 . 开头的文件夹（默认忽略；--include-pattern 仍可单独捞回）",
+        "arg_exclude_dir": "额外排除的目录名",
+        "arg_exclude_file": "额外排除的文件名",
+        "arg_exclude_pattern": "额外排除的通配符，如 *.min.js tests/*",
+        "arg_include_pattern": "强制包含的通配符（优先级最高，可穿透一切忽略规则）",
+        "arg_lang": "界面语言: auto=跟随系统 / zh=中文 / en=英文（默认 auto）",
+        "arg_line_numbers": "正文每行前加行号，便于 AI 精确引用",
+        "arg_max_file_lines": "单文件最多保留 N 行，超出截断（0=不限制）",
+        "arg_max_file_kb": "超过此大小的文件直接跳过（默认 512）",
+        "arg_max_total_kb": "合集总大小预算（KB），超出后停止追加文件",
+        "arg_split_tokens": "按 token 预估把合集切成多个 .md 文件（如 --split-tokens 60000）",
+        "arg_no_tree": "不输出目录结构",
+        "arg_no_index": "不输出文件索引",
+        "arg_no_ai_header": "不输出「给 AI 的阅读说明」",
+        "arg_no_smart_order": "禁用智能排序（README/配置/入口优先）",
+        "arg_prompt": "附带你的需求/问题，将置于合集最前",
+        "arg_prompt_file": "从文件读取需求描述（UTF-8）",
+        "arg_clip": "生成后复制到系统剪贴板；不指定 -o 且输出文件不存在时只复制不建文件（已存在则更新）；--restore 时改为从剪贴板读取要还原的 Markdown",
+        "arg_stdout": "输出到标准输出而不写文件",
+        "arg_dry_run": "只预览将拼接的文件与统计，不生成",
+        "arg_config": "指定配置文件（默认自动查找 {cfg}）",
+        "arg_no_config": "忽略已存在的配置文件",
+        "arg_init_config": "生成 {cfg} 模板后退出",
+        "arg_quiet": "静默模式，只输出结果路径",
+        "arg_version": "显示版本号",
+        # ── 反向还原（--restore）──
+        "arg_restore": "反向模式：把 Markdown 合集 / AI 回复写回真实文件（此时第一个位置参数是合集文件）",
+        "arg_list": "还原模式：仅列出解析到的文件清单，不写盘",
+        "arg_json": "还原模式：把解析结果以 JSON 输出到标准输出，不写盘",
+        "arg_diff": "还原模式：对将更新的文件打印 unified diff",
+        "arg_max_diff": "diff 最多输出的行数（默认 120）",
+        "arg_backup": "还原模式：覆盖前把旧文件改名为 *.bak-时间戳",
+        "arg_skip_existing": "还原模式：目标已存在的文件一律不动",
+        "arg_allow_truncated": "还原模式：允许写回生成时被截断的文件（默认跳过）",
+        "arg_strip_linenum": "还原模式：剥离 --line-numbers 行号前缀: auto=自动检测 / on=强制 / off=关闭（默认 auto）",
+        "arg_keep_encoding": "还原模式：按合集元信息中的原始编码写回（默认统一 UTF-8）",
+        "err_restore_need_bundle": "错误：必须提供 Markdown 合集文件，或使用 --clip / '-'（标准输入）。",
+        "err_restore_bundle": "错误：找不到合集文件: {path}",
+        "err_restore_read": "错误：无法读取合集文件（{err}）。",
+        "err_restore_clip": "错误：无法读取剪贴板；请改用文件参数或管道输入。",
+        "err_restore_no_entries": "错误：未解析到任何「标题 + 代码块」条目。请确认格式为「### 序号. 相对路径 + 围栏代码块」。",
+        "err_restore_mkdir": "错误：无法创建目标目录: {err}",
+        "err_target_no_restore": "错误：第二个位置参数（还原目标目录）只在 --restore 模式下有效。",
+        "err_restore_bad_target": "错误：还原目标目录不能是 '-'（'-' 仅用于表示从标准输入读取合集）。",
+        "err_restore_repo": "错误：--restore 不能与 --repo 同用。",
+        "err_restore_initcfg": "错误：--restore 不能与 --init-config 同用。",
+        "warn_unclosed": "[警告] 代码块未闭合，条目已跳过: {path}",
+        "warn_unsafe_path": "[警告] 路径不安全（绝对路径 / 盘符 / ..），已拒绝: {path}",
+        "warn_dup_path": "[警告] 路径重复，保留更合适的版本: {path}",
+        "warn_enc_fallback": "[警告] {path}: 编码 {enc} 写入失败，已回退 UTF-8",
+        "info_missing_files": "[提示] 文档自述另有 {n} 个文件未包含（无法从合集还原）:",
+        "info_missing_item": "    - {path}",
+        "info_dry_root": "[提示] 目标目录不存在（dry-run 不创建）: {root}",
+        "reason_only": "不在 --include-pattern 范围",
+        "reason_excluded": "命中 --exclude-pattern",
+        "reason_truncated": "生成时被截断（--allow-truncated 可强制写入）",
+        "reason_self": "与合集文件自身同名（避免自我覆盖）",
+        "reason_skip_existing": "已存在且内容不同（--skip-existing）",
+        "reason_unsafe": "路径不安全",
+        "reason_escape": "解析后逃出目标目录",
+        "reason_isdir": "目标路径是已存在的目录",
+        "reason_read_old": "旧文件读取失败: {err}",
+        "reason_backup": "备份失败: {err}",
+        "reason_write": "写入失败: {err}",
+        "sum_restore": "新建 {c} · 更新 {u} · 未变更 {s} · 跳过 {k} · 失败 {f}",
+        "sum_restore_dry": "（dry-run 预览，未写盘）",
+        "item_created": "  + {path}",
+        "item_updated": "  ~ {path}",
+        "item_unchanged": "  = {path}",
+        "item_skipped": "  - 跳过 {path}（{reason}）",
+        "item_failed": "  x 失败 {path}（{reason}）",
+        "more_items": "  ……及另外 {n} 项",
+        "list_title": "共解析到 {n} 个文件:",
+        "list_item": "{i:>4}. {path}  ({lang}, {n} 行){flag}",
+        "flag_trunc": "  [截断]",
+        # ── 主流程消息 ──
+        "err_root_not_dir": "错误：项目目录不存在或不是目录: {root}",
+        "err_repo_and_root": "错误：--repo 与本地项目目录不能同时指定。",
+        "err_repo_fetch": "错误：无法获取远程仓库快照：{err}",
+        "err_init_config_repo": "错误：--init-config 不能与 --repo 同用（模板只能生成在本地目录）。",
+        "err_config_exists": "错误：配置文件已存在: {path}（如需重新生成请先删除）",
+        "ok_config_created": "✔ 已生成配置模板: {path}",
+        "config_hint": " 按需修改后再次运行 proj2md 即可自动读取（命令行参数优先级更高）。language 字段可设 auto / zh / en 切换界面语言。",
+        "info_config_loaded": "· 已加载配置文件: {path}",
+        "warn_config_parse": "警告：配置文件解析失败（{err}），已忽略。",
+        "err_config_root": "配置根节点必须是 JSON 对象",
+        "err_no_files": "错误：没有找到任何可拼接的文件。可用 --ext / --include-pattern / --any-text / --include-hidden 调整范围。",
+        "err_all_skipped": "错误：所有候选文件都被跳过（过大 / 二进制 / 预算不足）。",
+        "warn_prompt_file": "警告：读取 --prompt-file 失败（{err}），已忽略。",
+        "part_label": " · 第 {i}/{n} 部分",
+        "ok_part_generated": "✔ {name} （{files} 个文件 · ~{tokens} tokens · {size}）",
+        "split_hint": "\n提示: 已按 --split-tokens={n} 切成 {total} 卷，请按 part1 → part2 顺序投喂。",
+        "ok_clipboard": "✔ 已复制到剪贴板（via {how}）",
+        "err_clipboard": "⚠ 复制到剪贴板失败：建议 pip install pyperclip，或手动打开输出文件复制。",
+        "warn_clip_discarded": "proj2md: 剪贴板复制失败，且未生成输出文件，结果已丢弃（需要落盘请加 -o FILE）。",
+        "warn_clip_wrote_file": "proj2md: 剪贴板复制失败；结果已写入输出文件。",
+        "info_clip_no_write": "提示: 未创建 {path}（仅 --clip 且输出文件不存在时不落盘；需要文件请用 -o 指定）",
+        "cancelled": "\n已取消。",
+        # ── 汇总报告 ──
+        "sum_generated": "✔ 已生成: {path}",
+        "sum_files": " ├─ 文件 : {n} 个",
+        "sum_files_skipped": " ├─ 文件 : {n} 个（跳过 {skipped} 个）",
+        "sum_hidden": " ├─ 隐藏目录 : 已忽略 {n} 个以 . 开头的文件夹（--include-hidden 可包含）",
+        "sum_lines": " ├─ 行数 : {lines}",
+        "sum_size": " ├─ 大小 : {size}（UTF-8 Markdown）",
+        "sum_tokens": " └─ Token预估: ~{tokens} → {hint}",
+        "sum_tip1": "提示: 直接把 .md 内容粘贴给网页 AI —— Markdown 代码块会自动语法高亮，AI 定位文件更轻松。",
+        "sum_tip2": " 常用组合: --line-numbers 精确引用行号 · --clip 复制到剪贴板 · --prompt \"你的需求\"",
+        # ── dry-run 预览 ──
+        "dry_preview": "· 预览：以下 {n} 个文件将被拼接（共 {lines} 行，~{tokens} tokens）",
+        "dry_file_item": " {i}. {path} ({lang}, {lines} 行, {size}){flag}",
+        "dry_truncated_flag": " [截断]",
+        "dry_skipped_head": "\n· 另有 {n} 个文件将被跳过:",
+        "dry_skip_item": " - {rel}（{reason}）",
+        "dry_more": " ……及另外 {n} 个",
+        "dry_hidden_head": "\n· 已忽略 {n} 个隐藏目录（以 . 开头，--include-hidden 可包含）:",
+        "dry_tokens": "· Token 预估: ~{tokens} → {hint}",
+        "dry_dryrun": "· dry-run 模式，未写入任何文件",
+        # ── Token 体量提示 ──
+        "hint_moderate": "✅ 体量适中，可直接粘贴给绝大多数网页 AI",
+        "hint_long": "⚠️ 较长，部分 AI 输入框有长度限制，建议裁剪或分卷",
+        "hint_very_long": "⚠️ 很长，仅长上下文模型（Claude/Gemini 等）能完整读取，建议 --split-tokens 分卷",
+        "hint_too_long": "❌ 过长，强烈建议 --exclude-dir / --max-file-lines / --only-ext / --split-tokens 裁剪",
+        # ── 跳过原因 / 读取错误 ──
+        "skip_unreadable": "无法读取（{cls}）",
+        "skip_too_large": "超过单文件上限 {kb:g} KB（实际 {size}），可用 --max-file-kb 调整",
+        "skip_read_err": "{err}，未纳入",
+        "skip_over_budget": "超出 --max-total-kb 总预算，未纳入",
+        "read_fail": "读取失败 {cls}",
+        "looks_binary": "疑似二进制",
+        "undecodable": "无法解码",
+        "truncated_note": "……（该文件共 {orig} 行，超过 --max-file-lines={keep} 限制，此处仅保留前 {keep} 行）\n",
+        "empty_file": "（空文件）\n",
+        # ── 生成的 Markdown 文档 ──
+        "doc_title": "# 项目代码合集：{root}{label}",
+        "doc_meta_time": "**生成时间**：{now}",
+        "doc_meta_project": "**项目名称**：{root}",
+        "doc_meta_files": "**文件数量**：{n} 个",
+        "doc_meta_files_skipped": "**文件数量**：{n} 个（另有 {skipped} 个被跳过，见文末附录）",
+        "doc_meta_lines": "**代码行数**：{lines} 行",
+        "doc_meta_size": "**代码体积**：{size}",
+        "doc_meta_tokens": "**Token 预估**：约 {tokens}（粗略估算，实际以平台为准）",
+        "doc_ai_header": "## 📖 给 AI 的阅读说明\n\n",
+        "ai_notes": """\
+本文件是「{root}」项目的源码拼接合集（Markdown 格式），由 proj2md 工具生成。请按以下约定阅读：
+1. **目录结构**＝项目整体布局；**文件索引**＝各文件的路径 / 语言 / 行数，其中「起始行」为该文件正文在本文件中的行号，可用于快速定位。
+2. 每个源文件对应「源代码正文」中的一个三级标题（`### 序号. 相对路径`），其正文位于紧随其后的围栏代码块中，围栏开头标注了语言标识。所有路径均相对项目根目录。
+3. 个别文件若被截断，其代码块末尾会有一行「……该文件共 N 行……」的提示。
+4. 引用代码时请使用「相对路径:行号」格式（例如 `src/main.py:42`）；若正文行首带有「 行号 | 」前缀，请以该前缀中的数字为文件内行号。
+5. 若「我的需求」中没有给出具体任务，请先简要总结项目结构与所用技术栈，再等待我的进一步指示。""",
+        "doc_prompt": "## 🎯 我的需求（请优先阅读）\n\n",
+        "doc_tree": "## 🗂 目录结构\n\n",
+        "doc_index": "## 📑 文件索引\n\n",
+        "doc_index_cols": "| # | 文件路径 | 语言 | 行数 | 起始行 |",
+        "doc_source": "## 📄 源代码正文\n\n",
+        "doc_lines_unit": "{n} 行",
+        "doc_encoding": "编码 `{enc}`",
+        "doc_truncated": "**已截断**",
+        "doc_appendix_skipped": "## 📎 附录：未包含的文件\n\n",
+        "doc_skip_item": "- {path}（{reason}）",
+        "doc_more_skipped": "- ……另有 {n} 个文件未列出",
+        "doc_appendix_hidden": "## 📎 附录：已忽略的隐藏目录（以 . 开头）\n\n"
+                               "如需包含这些目录，请加 `--include-hidden`，或用 "
+                               "`--include-pattern \"<目录名>/*\"` 捞回特定目录：\n\n",
+        "doc_hidden_item": "- {path}/（隐藏目录，默认忽略）",
+        "doc_more_hidden": "- ……另有 {n} 个隐藏目录未列出",
+        "doc_end": "---\n\n*END · 共 {n} 个文件 · {lines} 行 · 约 {tokens} tokens · 由 {tool} v{ver} 生成于 {now}*",
+    },
+    "en": {
+        # ── CLI help ──
+        "cli_desc": "Project source bundler: merges a whole project into a single Markdown document, ready to paste into web-based AIs.",
+        "cli_epilog": """\
+Ignore rules (applied in order):
+  hidden dirs (on by default) → dir blacklist → file blacklist → glob blacklist → extension whitelist
+  ※ --include-pattern has top priority and pierces all ignore rules (incl. hidden dirs)
+Common examples:
+  python proj2md.py                                # bundle current dir -> project_bundle.md
+  python proj2md.py myproject -o bundle.md         # specify project dir and output file
+  python proj2md.py --only-ext py md               # bundle only Python and Markdown files
+  python proj2md.py --ext proto graphql            # add extensions on top of defaults
+  python proj2md.py --exclude-dir tests docs       # exclude extra directories
+  python proj2md.py --include-pattern "src/*"      # force-include matching files (top priority)
+  python proj2md.py --include-hidden               # don't ignore dot-prefixed folders
+  python proj2md.py --include-pattern ".github/*"  # fish back one hidden dir's contents
+  python proj2md.py --lang zh                      # switch UI to Chinese (auto/zh/en)
+  python proj2md.py --line-numbers                 # line-numbered body for precise AI references
+  python proj2md.py --max-file-lines 300           # truncate files beyond 300 lines
+  python proj2md.py --max-total-kb 200             # 200KB total budget
+  python proj2md.py --split-tokens 60000           # auto-split into several .md volumes
+  python proj2md.py --prompt "review my code" --clip  # attach request and copy to clipboard
+  python proj2md.py --dry-run                      # preview only, no file written
+  python proj2md.py --init-config                  # generate proj2md.json template
+Restore (--restore):
+  python proj2md.py --restore bundle.md            # restore a bundle into current dir
+  python proj2md.py --restore bundle.md myproject  # restore into a target dir
+  python proj2md.py --restore bundle.md --dry-run  # preview actions, write nothing
+  python proj2md.py --restore bundle.md --diff --backup   # show diffs and back up old files
+  python proj2md.py --restore reply.md --include-pattern "src/*"   # restore only files under src/
+  python proj2md.py --restore --clip myproject     # read the AI reply from clipboard
+  cat bundle.md | python proj2md.py --restore - myproject  # read from stdin
+Notes:
+  Glob rules follow fnmatch; * spans directory levels (e.g. "src/*" matches everything under src).""",
+        "arg_help": "show this help message and exit",
+        "arg_root": "project root directory (default: current directory); with --restore, the Markdown bundle to restore ('-' reads stdin)",
+        "arg_target": "target directory to restore into (--restore only; default: current dir, created if missing)",
+        "arg_repo": "remote Git repository URL (no clone; GitHub downloads an archive, others try git archive)",
+        "arg_ref": "remote branch, tag, or commit ref (default: HEAD)",
+        "arg_output": "output file path (default: {out})",
+        "arg_ext": "add extensions on top of the default set, e.g. --ext py md",
+        "arg_only_ext": "include only these extensions (replaces the default set)",
+        "arg_any_text": "include every non-binary text file (ignores the extension whitelist)",
+        "arg_include_hidden": "do not ignore dot-prefixed folders (ignored by default; --include-pattern can still fish one back)",
+        "arg_exclude_dir": "extra directory names to exclude",
+        "arg_exclude_file": "extra file names to exclude",
+        "arg_exclude_pattern": "extra glob patterns to exclude, e.g. *.min.js tests/*",
+        "arg_include_pattern": "glob patterns to force-include (highest priority; pierces all ignore rules)",
+        "arg_lang": "UI language: auto = follow system / zh = Chinese / en = English (default: auto)",
+        "arg_line_numbers": "prefix each body line with its number so the AI can cite precisely",
+        "arg_max_file_lines": "keep at most N lines per file, truncate the rest (0 = unlimited)",
+        "arg_max_file_kb": "skip files larger than this many KB (default 512)",
+        "arg_max_total_kb": "total size budget for the bundle (KB); stop adding files once exceeded",
+        "arg_split_tokens": "split the bundle into several .md files by estimated tokens (e.g. --split-tokens 60000)",
+        "arg_no_tree": "omit the directory tree section",
+        "arg_no_index": "omit the file index section",
+        "arg_no_ai_header": "omit the 'Reading Notes for AI' header",
+        "arg_no_smart_order": "disable smart ordering (README / config / entry files first)",
+        "arg_prompt": "attach your request/question at the very top of the bundle",
+        "arg_prompt_file": "read the request description from a file (UTF-8)",
+        "arg_clip": "copy the result to the system clipboard; without -o and no output file yet, only the clipboard is written (an existing output file is updated); with --restore, read the Markdown to restore from the clipboard instead",
+        "arg_stdout": "print to stdout instead of writing a file",
+        "arg_dry_run": "preview the files and stats without writing anything",
+        "arg_config": "config file to use (default: auto-look-up {cfg})",
+        "arg_no_config": "ignore any existing config file",
+        "arg_init_config": "write a {cfg} template, then exit",
+        "arg_quiet": "quiet mode; print only the result path",
+        "arg_version": "show version and exit",
+        # ── restore mode (--restore) ──
+        "arg_restore": "reverse mode: write a Markdown bundle / AI reply back to real files (the first positional becomes the bundle file)",
+        "arg_list": "restore mode: list parsed files only, write nothing",
+        "arg_json": "restore mode: dump parsed entries as JSON to stdout, write nothing",
+        "arg_diff": "restore mode: print unified diff for files that will be updated",
+        "arg_max_diff": "max diff lines to print (default 120)",
+        "arg_backup": "restore mode: rename old files to *.bak-<timestamp> before overwriting",
+        "arg_skip_existing": "restore mode: never touch files that already exist",
+        "arg_allow_truncated": "restore mode: allow writing back files that were truncated at generation time (skipped by default)",
+        "arg_strip_linenum": "restore mode: strip --line-numbers prefixes: auto / on / off (default auto)",
+        "arg_keep_encoding": "restore mode: write back using the encoding found in metadata (default: UTF-8)",
+        "err_restore_need_bundle": "Error: a Markdown bundle file is required, or use --clip / '-' (stdin).",
+        "err_restore_bundle": "Error: bundle file not found: {path}",
+        "err_restore_read": "Error: could not read the bundle file ({err}).",
+        "err_restore_clip": "Error: could not read clipboard; use a file argument or pipe input instead.",
+        "err_restore_no_entries": "Error: no 'heading + fenced code block' entries parsed. Expected format: '### No. relative/path' followed by a fenced code block.",
+        "err_restore_mkdir": "Error: could not create target directory: {err}",
+        "err_target_no_restore": "Error: the second positional argument (restore target directory) is only valid with --restore.",
+        "err_restore_bad_target": "Error: the restore target directory cannot be '-' ('-' only marks stdin for the bundle).",
+        "err_restore_repo": "Error: --restore cannot be combined with --repo.",
+        "err_restore_initcfg": "Error: --restore cannot be combined with --init-config.",
+        "warn_unclosed": "[warn] unclosed code block, entry skipped: {path}",
+        "warn_unsafe_path": "[warn] unsafe path (absolute / drive / ..), rejected: {path}",
+        "warn_dup_path": "[warn] duplicate path, keeping the better version: {path}",
+        "warn_enc_fallback": "[warn] {path}: failed to write in {enc}, fell back to UTF-8",
+        "info_missing_files": "[info] the document reports {n} more files not included (cannot be restored):",
+        "info_missing_item": "    - {path}",
+        "info_dry_root": "[info] target directory does not exist (dry-run does not create it): {root}",
+        "reason_only": "not in --include-pattern scope",
+        "reason_excluded": "matched --exclude-pattern",
+        "reason_truncated": "truncated at generation time (use --allow-truncated to force)",
+        "reason_self": "same name as the bundle file itself (self-overwrite avoided)",
+        "reason_skip_existing": "exists with different content (--skip-existing)",
+        "reason_unsafe": "unsafe path",
+        "reason_escape": "resolved outside the target directory",
+        "reason_isdir": "target path is an existing directory",
+        "reason_read_old": "failed to read old file: {err}",
+        "reason_backup": "backup failed: {err}",
+        "reason_write": "write failed: {err}",
+        "sum_restore": "created {c} · updated {u} · unchanged {s} · skipped {k} · failed {f}",
+        "sum_restore_dry": " (dry-run preview, nothing written)",
+        "item_created": "  + {path}",
+        "item_updated": "  ~ {path}",
+        "item_unchanged": "  = {path}",
+        "item_skipped": "  - skipped {path} ({reason})",
+        "item_failed": "  x failed {path} ({reason})",
+        "more_items": "  ...and {n} more",
+        "list_title": "{n} files parsed:",
+        "list_item": "{i:>4}. {path}  ({lang}, {n} lines){flag}",
+        "flag_trunc": "  [truncated]",
+        # ── main-flow messages ──
+        "err_root_not_dir": "Error: project directory does not exist or is not a directory: {root}",
+        "err_repo_and_root": "Error: --repo and a local project directory cannot be used together.",
+        "err_repo_fetch": "Error: could not fetch remote repository snapshot: {err}",
+        "err_init_config_repo": "Error: --init-config cannot be combined with --repo (a template can only be written to a local directory).",
+        "err_config_exists": "Error: config file already exists: {path} (delete it first if you want to regenerate)",
+        "ok_config_created": "✔ Config template created: {path}",
+        "config_hint": " Edit it as needed, then run proj2md again — it is loaded automatically (CLI arguments take priority). Set \"language\" to auto / zh / en to switch the UI language.",
+        "info_config_loaded": "· Config file loaded: {path}",
+        "warn_config_parse": "Warning: failed to parse config file ({err}); ignored.",
+        "err_config_root": "config root must be a JSON object",
+        "err_no_files": "Error: no files found to bundle. Adjust the scope with --ext / --include-pattern / --any-text / --include-hidden.",
+        "err_all_skipped": "Error: every candidate file was skipped (too large / binary / over budget).",
+        "warn_prompt_file": "Warning: failed to read --prompt-file ({err}); ignored.",
+        "part_label": " · Part {i}/{n}",
+        "ok_part_generated": "✔ {name} ({files} files · ~{tokens} tokens · {size})",
+        "split_hint": "\nTip: split into {total} parts by --split-tokens={n}; feed them to the AI in order (part1 → part2 …).",
+        "ok_clipboard": "✔ Copied to clipboard (via {how})",
+        "err_clipboard": "⚠ Failed to copy to clipboard: try pip install pyperclip, or copy from the output file manually.",
+        "warn_clip_discarded": "proj2md: clipboard copy failed and no output file was written; the result was discarded (pass -o FILE to keep it).",
+        "warn_clip_wrote_file": "proj2md: clipboard copy failed; the output was written to the file.",
+        "info_clip_no_write": "Tip: {path} was not created (--clip skips writing when the output file doesn't exist yet; pass -o to create it)",
+        "cancelled": "\nCancelled.",
+        # ── summary report ──
+        "sum_generated": "✔ Generated: {path}",
+        "sum_files": " ├─ Files : {n}",
+        "sum_files_skipped": " ├─ Files : {n} ({skipped} skipped)",
+        "sum_hidden": " ├─ Hidden dirs : {n} dot-prefixed folders ignored (--include-hidden to include)",
+        "sum_lines": " ├─ Lines : {lines}",
+        "sum_size": " ├─ Size : {size} (UTF-8 Markdown)",
+        "sum_tokens": " └─ Token est.: ~{tokens} → {hint}",
+        "sum_tip1": "Tip: paste the .md straight into a web AI — code blocks get automatic syntax highlighting, which makes file references easier for the AI.",
+        "sum_tip2": " Common flags: --line-numbers for precise line refs · --clip to copy · --prompt \"your task\"",
+        # ── dry-run preview ──
+        "dry_preview": "· Preview: {n} files will be bundled ({lines} lines, ~{tokens} tokens)",
+        "dry_file_item": " {i}. {path} ({lang}, {lines} lines, {size}){flag}",
+        "dry_truncated_flag": " [truncated]",
+        "dry_skipped_head": "\n· {n} more files will be skipped:",
+        "dry_skip_item": " - {rel} ({reason})",
+        "dry_more": " ...and {n} more",
+        "dry_hidden_head": "\n· {n} hidden directories ignored (dot-prefixed; --include-hidden to include):",
+        "dry_tokens": "· Token estimate: ~{tokens} → {hint}",
+        "dry_dryrun": "· dry-run mode: nothing was written",
+        # ── token size hints ──
+        "hint_moderate": "✅ Moderate size — can be pasted directly into most web AIs",
+        "hint_long": "⚠️ Long — some AI input boxes have length limits; consider trimming or splitting",
+        "hint_very_long": "⚠️ Very long — only long-context models (Claude/Gemini etc.) can read it fully; consider --split-tokens",
+        "hint_too_long": "❌ Too long — strongly consider trimming with --exclude-dir / --max-file-lines / --only-ext / --split-tokens",
+        # ── skip reasons / read errors ──
+        "skip_unreadable": "unreadable ({cls})",
+        "skip_too_large": "exceeds per-file limit {kb:g} KB (actual {size}); adjust via --max-file-kb",
+        "skip_read_err": "{err}; excluded",
+        "skip_over_budget": "exceeds --max-total-kb total budget; excluded",
+        "read_fail": "read failed: {cls}",
+        "looks_binary": "looks binary",
+        "undecodable": "undecodable",
+        "truncated_note": "...(the file has {orig} lines in total, beyond the --max-file-lines={keep} limit; only the first {keep} lines are kept)\n",
+        "empty_file": "(empty file)\n",
+        # ── generated Markdown document ──
+        "doc_title": "# Project Code Bundle: {root}{label}",
+        "doc_meta_time": "**Generated at**: {now}",
+        "doc_meta_project": "**Project**: {root}",
+        "doc_meta_files": "**Files**: {n}",
+        "doc_meta_files_skipped": "**Files**: {n} ({skipped} more skipped — see the appendix at the end)",
+        "doc_meta_lines": "**Lines of code**: {lines}",
+        "doc_meta_size": "**Code size**: {size}",
+        "doc_meta_tokens": "**Token estimate**: ~{tokens} (rough; varies by platform)",
+        "doc_ai_header": "## 📖 Reading Notes for AI\n\n",
+        "ai_notes": """\
+This file is a Markdown bundle of the source code of the "{root}" project, generated by the proj2md tool. Please read it with these conventions:
+1. **Directory Tree** = overall layout; **File Index** = each file's path / language / line count, where "Start" is the line number where that file's body begins in this document — handy for quick lookup.
+2. Each source file corresponds to one third-level heading under "Source Code" (`### No. relative/path`); its body sits in the fenced code block right below the heading, with a language tag at the opening fence. All paths are relative to the project root.
+3. If a file was truncated, the last line of its code block will say "... the file has N lines in total ...".
+4. When citing code, use the "relative/path:line" format (e.g. `src/main.py:42`); if body lines carry a " line | " prefix, use the number in that prefix as the in-file line number.
+5. If "My Request" contains no specific task, first summarize the project structure and tech stack, then wait for further instructions.""",
+        "doc_prompt": "## 🎯 My Request (please read first)\n\n",
+        "doc_tree": "## 🗂 Directory Tree\n\n",
+        "doc_index": "## 📑 File Index\n\n",
+        "doc_index_cols": "| # | File Path | Language | Lines | Start |",
+        "doc_source": "## 📄 Source Code\n\n",
+        "doc_lines_unit": "{n} lines",
+        "doc_encoding": "encoding `{enc}`",
+        "doc_truncated": "**truncated**",
+        "doc_appendix_skipped": "## 📎 Appendix: Files Not Included\n\n",
+        "doc_skip_item": "- {path} ({reason})",
+        "doc_more_skipped": "- ...and {n} more files not listed",
+        "doc_appendix_hidden": "## 📎 Appendix: Ignored Hidden Directories (dot-prefixed)\n\n"
+                               "To include them, pass `--include-hidden`, or fish one back with "
+                               "`--include-pattern \"<dir>/*\"`:\n\n",
+        "doc_hidden_item": "- {path}/ (hidden dir, ignored by default)",
+        "doc_more_hidden": "- ...and {n} more hidden dirs not listed",
+        "doc_end": "---\n\n*END · {n} files · {lines} lines · ~{tokens} tokens · generated by {tool} v{ver} at {now}*",
+    },
+}
+# ── 当前界面语言 ──
+# ★ 修复（P0-2）：此前硬编码 "zh"，而 --help 在 parse_args 阶段渲染、--restore
+#   在 set_lang("auto") 之前就已返回，导致英文系统上这两条路径永远输出中文。
+#   改为「延迟初始化」：默认 None，首次取文案（t()）时按系统语言探测；
+#   set_lang() 一旦被调用（--lang 参数 / 配置文件）即覆盖探测结果。
+_CURRENT_LANG = None  # None = 尚未初始化，首次 t() 时探测
+def _ensure_lang() -> None:
+    """延迟初始化当前语言：首次取文案前探测系统语言。"""
+    global _CURRENT_LANG
+    if _CURRENT_LANG is None:
+        _CURRENT_LANG = detect_system_lang()
+def detect_system_lang() -> str:
+    """探测操作系统默认语言：任一来源的 locale 以 zh 开头 → 'zh'，否则 'en'。
+    依次尝试：环境变量 → locale 模块（抑制弃用警告）→ Windows 用户 UI 语言 API。"""
+    codes = []
+    for var in ("LC_ALL", "LC_MESSAGES", "LC_CTYPE", "LANG", "LANGUAGE"):
+        v = os.environ.get(var)
+        if v:
+            codes.append(v)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            loc = locale.getdefaultlocale()
+        if loc and loc[0]:
+            codes.append(loc[0])
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            lid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            name = locale.windows_locale.get(lid, "")
+            if name:
+                codes.append(name)
+        except Exception:
+            pass
+    for c in codes:
+        if c and str(c).lower().startswith("zh"):
+            return "zh"
+    return "en"
+def set_lang(lang) -> str:
+    """解析并设置界面语言。'auto'/None/空 → 探测系统；'zh-CN'/'en_US.UTF-8'
+    之类自动取主语言码；未支持的语言回退英文。返回最终生效语言。"""
+    global _CURRENT_LANG
+    s = str(lang if lang is not None else "auto").strip().lower()
+    if s in ("", "auto", "system", "default"):
+        _CURRENT_LANG = detect_system_lang()
+    else:
+        s = s.replace("-", "_").split("_")[0].split(".")[0]
+        _CURRENT_LANG = s if s in LANG_TEXTS else "en"
+    return _CURRENT_LANG
+def t(key: str, **kw) -> str:
+    """取当前语言的文案；缺 key 时回退英文，再缺则返回 key 本身。
+    无 kw 时不做 format（避免文案中的花括号引发异常）。"""
+    _ensure_lang()  # ★ 首次调用时按系统语言初始化
+    text = LANG_TEXTS.get(_CURRENT_LANG, {}).get(key)
+    if text is None:
+        text = LANG_TEXTS["en"].get(key, key)
+    return text.format(**kw) if kw else text

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # PyPI 包名：proj2md 已被占用，故发布为 proj2md-py；终端命令仍为 proj2md
 name = "proj2md-py"
-version = "2.3.2"
+version = "2.4.1"
 description = "项目源码一键拼接工具：把整个项目合并成单个 Markdown 文档，方便投喂网页端 AI"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -37,12 +37,11 @@ Issues = "https://github.com/Avlorayne/proj2md/issues"
 [project.optional-dependencies]
 clip = ["pyperclip"]
 
-# ★ 核心：注册命令，指向 proj2md.py 里的 cli()
+# ★ 核心：注册命令，指向 proj2md/cli.py 里的 cli()
 # 同时注册 proj2md 与 proj2md-py 两个命令，使 `uvx proj2md-py` 免安装可用
 [project.scripts]
-proj2md = "proj2md:cli"
-proj2md-py = "proj2md:cli"
+proj2md = "proj2md.cli:cli"
+proj2md-py = "proj2md.cli:cli"
 
-# ★ 单文件发行版的关键声明
 [tool.setuptools]
-py-modules = ["proj2md"]
+packages = ["proj2md"]

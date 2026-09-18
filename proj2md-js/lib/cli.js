@@ -13,14 +13,16 @@ const { buildTree, render } = require('./render.js');
 const { copyClipboard } = require('./clipboard.js');
 const { buildConfig } = require('./config.js');
 const { fetchRemoteRepo, removeTree } = require('./remote.js');
+const { runRestore } = require('./restore.js');
 class UsageError extends Error {}
 // ─────────────────────────── 参数解析 ───────────────────────────
 const BOOL_FLAGS = new Set([
   'any_text', 'include_hidden', 'line_numbers', 'no_tree', 'no_index', 'no_ai_header',
   'no_smart_order', 'clip', 'stdout', 'dry_run', 'no_config', 'init_config', 'quiet', 'version', 'help',
+  'restore', 'list', 'json', 'diff', 'backup', 'skip_existing', 'allow_truncated', 'keep_encoding',
 ]);
 const GREEDY_OPTS = new Set(['ext', 'only_ext', 'exclude_dir', 'exclude_file', 'exclude_pattern', 'include_pattern']);
-const VALUE_OPTS = new Set(['output', 'repo', 'ref', 'lang', 'max_file_lines', 'max_file_kb', 'max_total_kb', 'split_tokens', 'prompt', 'prompt_file', 'config']);
+const VALUE_OPTS = new Set(['output', 'repo', 'ref', 'lang', 'max_file_lines', 'max_file_kb', 'max_total_kb', 'split_tokens', 'prompt', 'prompt_file', 'config', 'strip_linenum', 'max_diff']);
 const SHORT_MAP = { '-h': 'help', '-o': 'output' };
 const USAGE_PARTS = [
   '[-h]', '[--repo URL]', '[--ref REF]', '[-o OUTPUT]', '[--ext EXT [EXT ...]]', '[--only-ext EXT [EXT ...]]',
@@ -30,7 +32,10 @@ const USAGE_PARTS = [
   '[--max-file-lines N]', '[--max-file-kb KB]', '[--max-total-kb KB]', '[--split-tokens N]',
   '[--no-tree]', '[--no-index]', '[--no-ai-header]', '[--no-smart-order]',
   '[--prompt PROMPT]', '[--prompt-file FILE]', '[--clip]', '[--stdout]', '[--dry-run]',
-  '[--config PATH]', '[--no-config]', '[--init-config]', '[--quiet]', '[--version]', '[root]',
+  '[--config PATH]', '[--no-config]', '[--init-config]', '[--restore]', '[target]',
+  '[--list]', '[--json]', '[--diff]', '[--max-diff N]', '[--backup]', '[--skip-existing]',
+  '[--allow-truncated]', '[--strip-linenum {auto,on,off}]', '[--keep-encoding]',
+  '[--quiet]', '[--version]', '[root]',
 ];
 function usageLine() {
   const prefix = 'usage: ' + D.TOOL + ' ';
@@ -74,11 +79,22 @@ const OPTIONS = [
   ['--config PATH', 'arg_config', { cfg: D.CONFIG_FILENAME }],
   ['--no-config', 'arg_no_config'],
   ['--init-config', 'arg_init_config', { cfg: D.CONFIG_FILENAME }],
+  ['--restore', 'arg_restore'],
+  ['target', 'arg_target'],
+  ['--list', 'arg_list'],
+  ['--json', 'arg_json'],
+  ['--diff', 'arg_diff'],
+  ['--max-diff N', 'arg_max_diff'],
+  ['--backup', 'arg_backup'],
+  ['--skip-existing', 'arg_skip_existing'],
+  ['--allow-truncated', 'arg_allow_truncated'],
+  ['--strip-linenum {auto,on,off}', 'arg_strip_linenum'],
+  ['--keep-encoding', 'arg_keep_encoding'],
   ['--quiet', 'arg_quiet'],
   ['--version', 'arg_version'],
 ];
 function printHelp() {
-  const rows = [['-h, --help', t('arg_help')], ['root', t('arg_root')]];
+  const rows = [['-h, --help', t('arg_help')], ['root', t('arg_root')], ['target', t('arg_target')]];
   for (const [flags, key, fmt] of OPTIONS) rows.push([flags, t(key, fmt)]);
   const width = Math.max(...rows.map((r) => r[0].length));
   const out = [usageLine(), '', t('cli_desc'), '', 'options:'];
@@ -134,21 +150,30 @@ function parseArgs(argv) {
   if (args.lang !== undefined && !['auto', 'zh', 'en'].includes(args.lang)) {
     throw new UsageError("argument --lang: invalid choice: '" + args.lang + "' (choose from 'auto', 'zh', 'en')");
   }
-  for (const k of ['max_file_lines', 'split_tokens']) {
+  for (const k of ['max_file_lines', 'split_tokens', 'max_diff']) {
     if (args[k] !== undefined) {
       const n = Number(args[k]);
-      if (!Number.isInteger(n)) throw new UsageError('argument --' + k.replace(/_/g, '-') + ": invalid int value: '" + args[k] + "'");
+      // ★ 修复（P0-3）：与 Python 版对齐，拒绝负数与非整数
+      //   （此前 --max-file-lines=-5 会导致从末尾截断，并生成「仅保留前 -5 行」的提示）
+      if (!Number.isInteger(n) || n < 0) {
+        throw new UsageError('argument --' + k.replace(/_/g, '-') + ": invalid int value: '" + args[k] + "' (must be a non-negative integer)");
+      }
       args[k] = n;
     }
+  }
+  if (args.strip_linenum !== undefined && !['auto', 'on', 'off'].includes(args.strip_linenum)) {
+    throw new UsageError("argument --strip-linenum: invalid choice: '" + args.strip_linenum + "' (choose from 'auto', 'on', 'off')");
   }
   for (const k of ['max_file_kb', 'max_total_kb']) {
     if (args[k] !== undefined) {
       const n = Number(args[k]);
-      if (!Number.isFinite(n)) throw new UsageError('argument --' + k.replace(/_/g, '-') + ": invalid float value: '" + args[k] + "'");
+      if (!Number.isFinite(n) || n < 0) { // ★ 拒绝负数
+        throw new UsageError('argument --' + k.replace(/_/g, '-') + ": invalid float value: '" + args[k] + "' (must be non-negative)");
+      }
       args[k] = n;
     }
   }
-  if (args._.length > 1) throw new UsageError('unrecognized arguments: ' + args._.slice(1).join(' '));
+  if (args._.length > 2) throw new UsageError('unrecognized arguments: ' + args._.slice(2).join(' '));
   return args;
 }
 // ─────────────────────────── 文件处理 ───────────────────────────
@@ -169,7 +194,7 @@ function orderKey(a, b) {
 }
 function buildRecords(cfg, candidates) {
   const records = [], skipped = [];
-  let total = 0;
+  let total = 0; // ★ 修复（P0-1）：预算按 UTF-8 字节计，与 --max-file-kb 的字节口径一致
   const budget = cfg.maxTotalKb ? Math.trunc(cfg.maxTotalKb * 1024) : 0;
   for (const { p, rel } of candidates) {
     let size;
@@ -184,9 +209,6 @@ function buildRecords(cfg, candidates) {
     }
     const { text, enc, err } = readText(p);
     if (text === null) { skipped.push([rel, t('skip_read_err', { err })]); continue; }
-    if (budget && records.length && total + cpLen(text) > budget) {
-      skipped.push([rel, t('skip_over_budget')]); continue;
-    }
     let txt = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     if (!txt.endsWith('\n')) txt += '\n';
     const origLines = txt.split('\n').length - 1;
@@ -199,6 +221,10 @@ function buildRecords(cfg, candidates) {
       truncated = true;
     }
     if (!txt.trim()) txt = t('empty_file');
+    const nb = Buffer.byteLength(txt, 'utf8'); // ★ 按最终写入正文的字节数计（截断/换行归一之后）
+    if (budget && records.length && total + nb > budget) {
+      skipped.push([rel, t('skip_over_budget')]); continue;
+    }
     records.push({
       rel, abspath: p,
       language: require('./util.js').langOf(rel),
@@ -207,7 +233,7 @@ function buildRecords(cfg, candidates) {
       chars: cpLen(txt), nbytes: size,
       truncated, origLines,
     });
-    total += cpLen(txt);
+    total += nb;
   }
   return { records, skipped };
 }
@@ -285,6 +311,14 @@ async function main(argv) {
   }
   if (args.help) { printHelp(); return 0; }
   if (args.version) { cprint(D.TOOL + ' v' + D.VERSION); return 0; }
+  // ── 反向还原模式：第一个位置参数是合集文件，第二个是还原目标目录 ──
+  if (args.restore) {
+    if (args.repo) { cprint(t('err_restore_repo')); return 2; }
+    if (args.init_config) { cprint(t('err_restore_initcfg')); return 2; }
+    // 与 Python 版一致：restore 模式不读 proj2md.json，语言仅由 --lang / 系统探测决定
+    return runRestore(args);
+  }
+  if (args._[1]) { cprint(t('err_target_no_restore')); return 2; }
   if (args.repo && args._[0]) {
     cprint(t('err_repo_and_root'));
     return 2;
@@ -309,95 +343,111 @@ async function main(argv) {
     root = path.resolve(expandUser(args._[0] || '.'));
     rootName = path.basename(root);
   }
-  const finish = (code) => {
+  // try/finally 覆盖所有 return / throw 路径，确保远程快照临时目录一定被清理。
+  try {
+    const quiet = Boolean(args.quiet);
+    const cfgPath = args.config !== undefined
+      ? path.resolve(expandUser(args.config))
+      : remote ? path.join(remote.tmp, D.CONFIG_FILENAME) : path.join(root, D.CONFIG_FILENAME);
+    // ── 1. 先静默读取配置文件（界面语言可能写在里面），暂存加载结果 ──
+    let data = {}, loadState = null; // null / ['ok'] / ['bad_root'] / ['error', exc]
+    if (!args.no_config && isFile(cfgPath)) {
+      try {
+        const loaded = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        if (typeof loaded !== 'object' || loaded === null || Array.isArray(loaded)) loadState = ['bad_root'];
+        else { data = loaded; loadState = ['ok']; }
+      } catch (e) { loadState = ['error', e]; }
+    }
+    // ── 2. 解析界面语言：--lang 参数 > 配置文件 language 字段 > 系统探测 ──
+    setLang(args.lang !== undefined ? args.lang : (data.language !== undefined ? data.language : 'auto'));
+    if (!quiet && loadState) {
+      if (loadState[0] === 'ok') cprint(t('info_config_loaded', { path: cfgPath }));
+      else if (loadState[0] === 'bad_root') cprint(t('warn_config_parse', { err: t('err_config_root') }));
+      else cprint(t('warn_config_parse', { err: loadState[1].message }));
+    }
+    if (!isDir(root)) { cprint(t('err_root_not_dir', { root })); return 1; }
+    if (args.init_config) {
+      if (fs.existsSync(cfgPath)) { cprint(t('err_config_exists', { path: cfgPath })); return 1; }
+      fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+      fs.writeFileSync(cfgPath, JSON.stringify(D.CONFIG_TEMPLATE, null, 2) + '\n', 'utf8');
+      cprint(t('ok_config_created', { path: cfgPath }));
+      cprint(t('config_hint'));
+      return 0;
+    }
+    const cfg = buildConfig(root, args, data, cfgPath);
+    const disc = discover(cfg);
+    const candidates = disc.found, prunedHidden = disc.prunedHidden;
+    if (!candidates.length) { cprint(t('err_no_files')); return 1; }
+    if (cfg.smartOrder) candidates.sort(orderKey);
+    const built = buildRecords(cfg, candidates);
+    const records = built.records, skipped = built.skipped;
+    if (!records.length) { cprint(t('err_all_skipped')); return 1; }
+    const promptText = loadPrompt(args);
+    if (args.dry_run) { dryRunReport(cfg, records, skipped, prunedHidden, rootName); return 0; }
+    // ── 分卷模式 ──
+    if (cfg.splitTokens && !args.stdout) {
+      const chunks = []; let cur = [], curTok = 0;
+      for (const r of records) {
+        const tk = estimateTokens(r.content); // 注意：勿命名为 t，避免遮蔽翻译函数
+        if (cur.length && curTok + tk > cfg.splitTokens) { chunks.push([cur, curTok]); cur = []; curTok = 0; }
+        cur.push(r); curTok += tk;
+      }
+      if (cur.length) chunks.push([cur, curTok]);
+      if (chunks.length > 1) {
+        const base = path.resolve(cfg.output);
+        fs.mkdirSync(path.dirname(base), { recursive: true });
+        const suf = path.extname(base) || '.md';
+        const stem = path.basename(base, path.extname(base));
+        chunks.forEach(([chunk, tok], idx) => {
+          const i = idx + 1;
+          const label = t('part_label', { i, n: chunks.length });
+          const sk = i === chunks.length ? skipped : [];
+          const ph = i === chunks.length ? prunedHidden : [];
+          const txt = render(cfg, chunk, sk, promptText, rootName, label, ph);
+          const p = path.join(path.dirname(base), stem + '.part' + i + suf);
+          fs.writeFileSync(p, txt, 'utf8');
+          if (!quiet) {
+            cprint(t('ok_part_generated', {
+              name: path.basename(p), files: chunk.length,
+              tokens: fmtInt(tok), size: fmtSize(Buffer.byteLength(txt, 'utf8')),
+            }));
+          }
+        });
+        if (!quiet) cprint(t('split_hint', { n: cfg.splitTokens, total: chunks.length }));
+        return 0;
+      }
+    }
+    const text = render(cfg, records, skipped, promptText, rootName, '', prunedHidden);
+    if (args.stdout) { process.stdout.write(text); return 0; }
+    const out = path.resolve(cfg.output);
+    // 仅 --clip 且未指定输出文件（-o / 配置）：输出文件不存在时不落盘，已存在才更新
+    if (cfg.clip && args.output === undefined && !data.output && !fs.existsSync(out)) {
+      const res = copyClipboard(text);
+      cprint(res.ok ? t('ok_clipboard', { how: res.how }) : t('err_clipboard'));
+      if (!res.ok) {
+        // 该分支不落盘，剪贴板失败等于结果全丢；CI / 管道下必须让失败可见
+        if (!process.stdout.isTTY) process.stderr.write(t('warn_clip_discarded') + '\n');
+      }
+      if (!quiet) cprint(t('info_clip_no_write', { path: out }));
+      return 0;
+    }
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, text, 'utf8');
+    if (quiet) cprint(out);
+    else printSummary(out, records, skipped, text, prunedHidden);
+    if (cfg.clip) {
+      const res = copyClipboard(text);
+      if (res.ok) cprint(t('ok_clipboard', { how: res.how }));
+      else {
+        cprint(t('err_clipboard'));
+        // 非交互场景（CI / 管道）静默失败会丢结果，向 stderr 提示
+        if (!process.stdout.isTTY) process.stderr.write(t('warn_clip_wrote_file') + '\n');
+      }
+    }
+    return 0;
+  } finally {
     if (remote) removeTree(remote.tmp);
-    return code;
-  };
-  const quiet = Boolean(args.quiet);
-  const cfgPath = args.config !== undefined
-    ? path.resolve(expandUser(args.config))
-    : remote ? path.join(remote.tmp, D.CONFIG_FILENAME) : path.join(root, D.CONFIG_FILENAME);
-  // ── 1. 先静默读取配置文件（界面语言可能写在里面），暂存加载结果 ──
-  let data = {}, loadState = null; // null / ['ok'] / ['bad_root'] / ['error', exc]
-  if (!args.no_config && isFile(cfgPath)) {
-    try {
-      const loaded = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      if (typeof loaded !== 'object' || loaded === null || Array.isArray(loaded)) loadState = ['bad_root'];
-      else { data = loaded; loadState = ['ok']; }
-    } catch (e) { loadState = ['error', e]; }
   }
-  // ── 2. 解析界面语言：--lang 参数 > 配置文件 language 字段 > 系统探测 ──
-  setLang(args.lang !== undefined ? args.lang : (data.language !== undefined ? data.language : 'auto'));
-  if (!quiet && loadState) {
-    if (loadState[0] === 'ok') cprint(t('info_config_loaded', { path: cfgPath }));
-    else if (loadState[0] === 'bad_root') cprint(t('warn_config_parse', { err: t('err_config_root') }));
-    else cprint(t('warn_config_parse', { err: loadState[1].message }));
-  }
-  if (!isDir(root)) { cprint(t('err_root_not_dir', { root })); return finish(1); }
-  if (args.init_config) {
-    if (fs.existsSync(cfgPath)) { cprint(t('err_config_exists', { path: cfgPath })); return finish(1); }
-    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-    fs.writeFileSync(cfgPath, JSON.stringify(D.CONFIG_TEMPLATE, null, 2) + '\n', 'utf8');
-    cprint(t('ok_config_created', { path: cfgPath }));
-    cprint(t('config_hint'));
-    return finish(0);
-  }
-  const cfg = buildConfig(root, args, data, cfgPath);
-  const disc = discover(cfg);
-  const candidates = disc.found, prunedHidden = disc.prunedHidden;
-  if (!candidates.length) { cprint(t('err_no_files')); return finish(1); }
-  if (cfg.smartOrder) candidates.sort(orderKey);
-  const built = buildRecords(cfg, candidates);
-  const records = built.records, skipped = built.skipped;
-  if (!records.length) { cprint(t('err_all_skipped')); return finish(1); }
-  const promptText = loadPrompt(args);
-  if (args.dry_run) { dryRunReport(cfg, records, skipped, prunedHidden, rootName); return finish(0); }
-  // ── 分卷模式 ──
-  if (cfg.splitTokens && !args.stdout) {
-    const chunks = []; let cur = [], curTok = 0;
-    for (const r of records) {
-      const tk = estimateTokens(r.content); // 注意：勿命名为 t，避免遮蔽翻译函数
-      if (cur.length && curTok + tk > cfg.splitTokens) { chunks.push([cur, curTok]); cur = []; curTok = 0; }
-      cur.push(r); curTok += tk;
-    }
-    if (cur.length) chunks.push([cur, curTok]);
-    if (chunks.length > 1) {
-      const base = path.resolve(cfg.output);
-      fs.mkdirSync(path.dirname(base), { recursive: true });
-      const suf = path.extname(base) || '.md';
-      const stem = path.basename(base, path.extname(base));
-      chunks.forEach(([chunk, tok], idx) => {
-        const i = idx + 1;
-        const label = t('part_label', { i, n: chunks.length });
-        const sk = i === chunks.length ? skipped : [];
-        const ph = i === chunks.length ? prunedHidden : [];
-        const txt = render(cfg, chunk, sk, promptText, rootName, label, ph);
-        const p = path.join(path.dirname(base), stem + '.part' + i + suf);
-        fs.writeFileSync(p, txt, 'utf8');
-        if (!quiet) {
-          cprint(t('ok_part_generated', {
-            name: path.basename(p), files: chunk.length,
-            tokens: fmtInt(tok), size: fmtSize(Buffer.byteLength(txt, 'utf8')),
-          }));
-        }
-      });
-      if (!quiet) cprint(t('split_hint', { n: cfg.splitTokens, total: chunks.length }));
-      return finish(0);
-    }
-  }
-  const text = render(cfg, records, skipped, promptText, rootName, '', prunedHidden);
-  if (args.stdout) { process.stdout.write(text); return finish(0); }
-  const out = path.resolve(cfg.output);
-  fs.mkdirSync(path.dirname(out), { recursive: true });
-  fs.writeFileSync(out, text, 'utf8');
-  if (quiet) cprint(out);
-  else printSummary(out, records, skipped, text, prunedHidden);
-  if (cfg.clip) {
-    const res = copyClipboard(text);
-    if (res.ok) cprint(t('ok_clipboard', { how: res.how }));
-    else cprint(t('err_clipboard'));
-  }
-  return finish(0);
 }
 async function cli() {
   process.on('SIGINT', () => { cprint(t('cancelled')); process.exit(130); });

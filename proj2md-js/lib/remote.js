@@ -11,6 +11,9 @@ const tls = require('tls');
 const { spawnSync } = require('child_process');
 const zlib = require('zlib');
 
+// ★ 修复（P2）：远程归档整体读入内存，给一个宽松上限，防止超大仓库吃满内存
+const MAX_ARCHIVE_BYTES = 1 << 30; // 1 GiB
+
 function removeTree(p) {
   if (fs.rmSync) fs.rmSync(p, { recursive: true, force: true });
   else fs.rmdirSync(p, { recursive: true }); // Node 14.0 compatibility
@@ -91,17 +94,27 @@ function proxyTunnel(proxy, host, port) {
     socket.on('connect', () => {
       socket.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`);
     });
-    let buf = '';
+    // 以 Buffer 累积（而非字符串）：响应头可能跨多个 chunk，
+    // 用字符串拼接时 idx 是累积串里的偏移，无法直接换算成当前 chunk 的下标。
+    let buf = Buffer.alloc(0);
     const onData = (chunk) => {
-      buf += chunk.toString('latin1');
-      if (!buf.includes('\r\n\r\n')) {
+      buf = Buffer.concat([buf, chunk]);
+      const idx = buf.indexOf('\r\n\r\n');
+      if (idx === -1) {
         if (buf.length > 8192) fail(new Error('proxy returned a malformed response'));
         return;
       }
       socket.removeListener('data', onData);
       socket.setTimeout(0);
-      const status = Number((buf.match(/^HTTP\/1\.[01] (\d+)/) || [])[1]);
+      const status = Number((buf.toString('latin1').match(/^HTTP\/1\.[01] (\d+)/) || [])[1]);
       if (status !== 200) { fail(new Error('proxy CONNECT failed with HTTP ' + (status || '?'))); return; }
+      // 响应头之后常与 TLS ServerHello 粘连在同一个 chunk 里。先把这段字节回推，
+      // 否则它会被丢掉、secureConnect 永不触发导致挂死。pause() 是必要的：
+      // flowing 模式下没有 data 监听者时回推的数据会被直接丢弃，
+      // 之后 tls.connect 挂上监听并恢复，才真正读到 ServerHello。
+      const rest = buf.subarray(idx + 4);
+      socket.pause();
+      if (rest.length) socket.unshift(rest);
       resolve(socket);
     };
     socket.on('data', onData);
@@ -132,15 +145,35 @@ async function get(url, headers, redirects) {
         return;
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
-        res.resume(); reject(new Error('HTTP ' + res.statusCode)); return;
+        res.resume();
+        if (tunnel) tunnel.destroy(); // 非 2xx 直接放弃连接，别让隧道 socket 悬着
+        reject(new Error('HTTP ' + res.statusCode));
+        return;
       }
       const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
+      let got = 0;
+      res.on('data', (chunk) => {
+        got += chunk.length;
+        if (got > MAX_ARCHIVE_BYTES) { // ★ 修复（P2）：限量读取
+          req.destroy(new Error('remote archive exceeds the ' + MAX_ARCHIVE_BYTES + ' byte limit'));
+          return;
+        }
+        chunks.push(chunk);
+      });
       res.on('end', () => resolve(Buffer.concat(chunks)));
-      res.on('error', reject);
+      res.on('error', (err) => {
+        if (tunnel) tunnel.destroy();
+        reject(err);
+      });
     });
-    req.setTimeout(60000, () => req.destroy(new Error('request timed out')));
-    req.on('error', reject);
+    req.setTimeout(60000, () => {
+      if (tunnel) tunnel.destroy();
+      req.destroy(new Error('request timed out'));
+    });
+    req.on('error', (err) => {
+      if (tunnel) tunnel.destroy(); // 请求失败时隧道 socket 不会自行关闭，需显式销毁
+      reject(err);
+    });
   });
 }
 
@@ -149,27 +182,70 @@ function octal(buf) {
   return s ? parseInt(s, 8) : 0;
 }
 function safeParts(name) {
-  const parts = String(name).replace(/\\/g, '/').split('/').filter(Boolean);
+  const s = String(name).replace(/\\/g, '/');
+  // 显式拒绝绝对路径条目：filter(Boolean) 会把首段空串滤掉，
+  // 于是 "/etc/x" 被相对化为 "etc/x"，绕过下面的检查写出临时目录之外。
+  if (s.startsWith('/')) return null;
+  const parts = s.split('/').filter(Boolean);
   if (!parts.length || parts.some((p) => p === '.' || p === '..')) return null;
   // 盘符条目（"C:/x"）在 Python 版会逃出临时目录，这里同样拒收，保持两端一致
   if (/^[A-Za-z]:$/.test(parts[0])) return null;
   return parts;
 }
+/** ★ 解析 PAX 扩展记录（"len key=value\n" 反复出现），返回 key→value 映射。 */
+function parsePax(body) {
+  const out = {};
+  let off = 0;
+  while (off < body.length) {
+    const sp = body.indexOf(0x20, off); // 记录长度前缀后的空格
+    if (sp === -1) break;
+    const len = parseInt(body.toString('ascii', off, sp), 10);
+    if (!Number.isFinite(len) || len <= 0 || off + len > body.length) break;
+    // 记录格式为 "<len> key=value\n"，len 含前缀与换行本身；值部分从空格之后开始
+    const rec = body.toString('utf8', sp + 1, off + len).replace(/\n$/, '');
+    const eq = rec.indexOf('=');
+    if (eq > 0) out[rec.slice(0, eq)] = rec.slice(eq + 1);
+    off += len;
+  }
+  return out;
+}
 function tarEntries(payload) {
   let data = payload;
   if (data[0] === 0x1f && data[1] === 0x8b) data = zlib.gunzipSync(data);
   const out = [];
+  let paxPath = null; // ★ 待生效的 PAX path（作用于紧随其后的文件条目）
+  let gnuName = null; // ★ 待生效的 GNU LongName（同上）
   for (let off = 0; off + 512 <= data.length;) {
     const hdr = data.subarray(off, off + 512);
     if (hdr.every((b) => b === 0)) break;
     const name = hdr.subarray(0, 100).toString('utf8').replace(/\0.*$/, '');
     const prefix = hdr.subarray(345, 500).toString('utf8').replace(/\0.*$/, '');
-    const full = prefix ? prefix + '/' + name : name;
     const size = octal(hdr.subarray(124, 136));
     const type = String.fromCharCode(hdr[156] || 48);
     const body = data.subarray(off + 512, off + 512 + size);
-    if (type === '0' || type === '\0' || type === '5') out.push({ parts: safeParts(full), type, body });
     off += 512 + Math.ceil(size / 512) * 512;
+    // ★ 修复（P1-4）：支持 PAX / GNU 长文件名扩展。GitHub codeload 归档由 Go 生成，
+    //   路径超过 100 字节时会写 PAX "x" 记录；旧实现直接跳过该记录，
+    //   导致后面的文件被截断成 100 字节内的错误文件名解出。
+    //   （PAX 的 size 覆盖记录仅 >8GB 单文件才需要，codeload 归档不会出现，故忽略。）
+    if (type === 'x') { // PAX per-file extended header
+      const rec = parsePax(body);
+      if (rec.path !== undefined) paxPath = rec.path;
+      continue;
+    }
+    if (type === 'g') continue; // PAX global header：本工具用不到
+    if (type === 'L') {         // GNU long name
+      gnuName = body.toString('utf8').replace(/\0+$/, '');
+      continue;
+    }
+    if (type === '0' || type === '\0' || type === '5') {
+      let full = prefix ? prefix + '/' + name : name;
+      if (paxPath !== null) full = paxPath;
+      else if (gnuName !== null) full = gnuName;
+      paxPath = null;
+      gnuName = null;
+      out.push({ parts: safeParts(full), type, body });
+    }
   }
   return out.filter((entry) => entry.parts);
 }
@@ -219,6 +295,6 @@ async function fetchRemoteRepo(url, ref) {
 
 // 内部函数一并导出，供测试直接做离线校验
 module.exports = {
-  fetchRemoteRepo, removeTree, githubRepo, tarEntries, extractTar,
+  fetchRemoteRepo, removeTree, githubRepo, tarEntries, parsePax, extractTar,
   parseProxy, matchNoProxy, envProxy, proxyTunnel, detectProxy,
 };

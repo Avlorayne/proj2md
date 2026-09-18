@@ -136,6 +136,57 @@ run([PROJ, '-o', outEx, '--exclude-dir', 'tests', '--exclude-pattern', '*.js']);
 const filesEx = bundled(read(outEx));
 ok('--exclude-dir works', !filesEx.includes('tests/test_main.py'));
 ok('--exclude-pattern works', !filesEx.includes('src/util.js'));
+// 构建产物目录：*.egg-info 等通配黑名单（proj2md 自己的合集就曾收录 egg-info）
+write('pkg.egg-info/PKG-INFO', 'Metadata-Version: 2.1\n');
+write('pkg.egg-info/SOURCES.txt', 'src/main.py\n');
+write('deps.dist-info/METADATA', 'Name: deps\n');
+const outEgg = path.join(OUT, 'egg.md');
+run([PROJ, '-o', outEgg]);
+const mdEgg = read(outEgg);
+ok('wildcard dir blacklist skips egg-info', !bundled(mdEgg).some((f) => /egg-info|dist-info/.test(f)),
+  bundled(mdEgg).join(','));
+// 目录链接不递归（跟随会让子树被收录两遍，成环时还会无限递归）
+const linkDir = path.join(PROJ, 'linked-src');
+let linkMade = false;
+try { fs.symlinkSync(path.join(PROJ, 'src'), linkDir, 'junction'); linkMade = true; } catch (e) { /* 无权限则跳过 */ }
+if (linkMade) {
+  const outLink = path.join(OUT, 'link.md');
+  run([PROJ, '-o', outLink]);
+  ok('does not recurse into dir links', !bundled(read(outLink)).includes('linked-src/main.py'));
+  fs.rmSync(linkDir, { recursive: true, force: true });
+}
+// 文件链接照常收录（与 Python os.walk 把 symlink-to-file 归入 filenames 一致）
+const linkFile = path.join(PROJ, 'linked-util.js');
+let fileLinkMade = false;
+try { fs.symlinkSync(path.join(PROJ, 'src', 'util.js'), linkFile, 'file'); fileLinkMade = true; } catch (e) { /* Windows 建文件软链需管理员 */ }
+if (fileLinkMade) {
+  const outLinkF = path.join(OUT, 'linkf.md');
+  run([PROJ, '-o', outLinkF]);
+  ok('includes file links', bundled(read(outLinkF)).includes('linked-util.js'));
+  fs.rmSync(linkFile, { force: true });
+}
+
+// 编码判定：能 decode 就接受，不做 round-trip（GBK 存在多对一区段，
+// round-trip 失败会让 Node 降级 latin-1，与 Python 的「编码」字段分叉）。
+// iconv-lite 是可选依赖，缺失时跳过。
+(function encodingChain() {
+  let iconv = null;
+  try { iconv = require('iconv-lite'); } catch (e) { iconv = null; }
+  if (!iconv) { process.stdout.write('  skip gbk decode (iconv-lite not installed)\n'); return; }
+  const { readText } = require(path.join(__dirname, '..', 'lib', 'reader.js'));
+  const txt = '中文测试内容\n';
+  const p = path.join(TMP, 'gbk.txt');
+  fs.writeFileSync(p, iconv.encode(txt, 'gbk'));
+  const r = readText(p);
+  ok('gbk file decoded as gbk', r.enc === 'gbk' && r.text === txt, 'enc=' + r.enc);
+  // a2e3 解码为 "€" 但再编码得到 80（GBK 多对一）：旧 round-trip 判定会判失败并降级
+  // latin-1，于是同一份字节 Python 报 gbk、Node 报 latin-1。
+  const p2 = path.join(TMP, 'gbk-tricky.txt');
+  fs.writeFileSync(p2, Buffer.concat([Buffer.from([0xa2, 0xe3]), Buffer.from('\n', 'utf8')]));
+  const r2 = readText(p2);
+  ok('gbk multi-to-one bytes still decode as gbk', r2.enc === 'gbk' && r2.text === '€\n',
+    'enc=' + r2.enc + ' text=' + JSON.stringify(r2.text));
+})();
 
 // ── 6. 行号 / 截断 / 预算 ──
 section('6. line numbers / truncate / budget');
@@ -259,6 +310,8 @@ remote.extractTar(tar, dest);
 ok('strips common top-level dir', fs.existsSync(path.join(dest, 'src', 'main.py')) && fs.existsSync(path.join(dest, 'README.md')));
 ok('rejects .. path traversal', !fs.existsSync(path.join(TMP, 'escape.txt')) && !fs.existsSync(path.join(dest, '..', 'escape.txt')));
 ok('rejects drive-letter entry', remote.tarEntries(makeTarGz([['C:/evil.txt', 'x\n']])).length === 0);
+// 绝对路径条目（filter(Boolean) 会把首段空串滤掉，需显式拒绝才能拦住）
+ok('rejects absolute-path tar entry', remote.tarEntries(makeTarGz([['/etc/evil.txt', 'x\n']])).length === 0);
 ok('empty archive -> throws', (function () {
   try { remote.extractTar(Buffer.alloc(1024), dest); return false; } catch (e) { return /no files/.test(e.message); }
 })());
@@ -291,6 +344,176 @@ function withFakeProxy(reply, fn) {
     });
   });
 }
+// 响应头与紧随其后的数据粘在同一个 chunk 时，剩余字节必须回推到隧道 socket。
+// 旧实现直接丢弃（或错用累积串偏移做 chunk 切片），真实 TLS 握手会永远等不到 ServerHello。
+function withStickyProxy(fn) {
+  const rest = 'PAYLOAD-AFTER-HEADERS';
+  const srv = require('net').createServer((sock) => {
+    sock.once('data', () => sock.write('HTTP/1.1 200 Connection established\r\n\r\n' + rest));
+  });
+  return new Promise((resolve, reject) => {
+    srv.listen(0, '127.0.0.1', async () => {
+      try { resolve(await fn(srv.address().port, rest)); }
+      catch (e) { reject(e); }
+      finally { srv.close(); }
+    });
+  });
+}
+
+// ── 11. 反向还原（--restore） ──
+section('11. restore');
+const bundleOut = path.join(OUT, 'restore-src.md');
+run([PROJ, '-o', bundleOut, '--no-config']);
+ok('restore --list', run(['--restore', bundleOut, '--list']).out.includes('src/main.py') && run(['--restore', bundleOut, '--list']).out.includes('共解析到'));
+const restored = path.join(OUT, 'restored');
+const rRes = run(['--restore', bundleOut, restored]);
+ok('restore round-trip', rRes.status === 0
+  && read(path.join(restored, 'src', 'main.py')) === read(path.join(PROJ, 'src', 'main.py'))
+  && read(path.join(restored, 'api', 'schema.proto')) === read(path.join(PROJ, 'api', 'schema.proto'))
+  && fs.existsSync(path.join(restored, '.gitignore')));
+ok('second restore all unchanged', run(['--restore', bundleOut, restored]).out.includes('未变更'));
+const rstDry = run(['--restore', bundleOut, path.join(OUT, 'never'), '--dry-run']);
+ok('restore --dry-run writes nothing', rstDry.status === 0 && rstDry.out.includes('未写盘') && !fs.existsSync(path.join(OUT, 'never')));
+const rstJson = run(['--restore', bundleOut, '--json']);
+ok('restore --json', rstJson.status === 0 && rstJson.out.trim().startsWith('[') && rstJson.out.includes('"path": "src/main.py"'));
+// 截断保护：默认跳过，--allow-truncated 强制写回
+const truncMd = path.join(OUT, 'trunc-bundle.md');
+fs.writeFileSync(truncMd, '### 1. t/a.txt\n\n```\nline1\n……（该文件共 10 行，超过 --max-file-lines=1 限制，此处仅保留前 1 行）\n```\n');
+const rstTr = run(['--restore', truncMd, path.join(OUT, 'r-trunc')]);
+ok('truncated skipped by default', rstTr.status === 0 && !fs.existsSync(path.join(OUT, 'r-trunc', 't', 'a.txt')) && rstTr.out.includes('跳过'));
+ok('--allow-truncated writes', (function () {
+  const p = path.join(OUT, 'r-trunc2', 't', 'a.txt');
+  const r = run(['--restore', truncMd, path.join(OUT, 'r-trunc2'), '--allow-truncated']);
+  return r.status === 0 && fs.existsSync(p) && fs.readFileSync(p, 'utf8') === 'line1\n';
+})());
+// 路径逃逸：../ 被拒绝，其余条目正常写回
+const badMd = path.join(OUT, 'bad-bundle.md');
+fs.writeFileSync(badMd, '### 1. ../escape.txt\n\n```\nevil\n```\n\n### 2. ok.txt\n\n```\nfine\n```\n');
+const rstBad = run(['--restore', badMd, path.join(OUT, 'r-bad')]);
+ok('unsafe path rejected', rstBad.status === 1 && rstBad.out.includes('路径不安全')
+  && !fs.existsSync(path.join(OUT, 'escape.txt'))
+  && fs.readFileSync(path.join(OUT, 'r-bad', 'ok.txt'), 'utf8') === 'fine\n');
+// 绝对路径：safeRel 曾把 "/etc/x" 相对化成 "etc/x"，护栏形同虚设
+const { safeRel } = require(path.join(__dirname, '..', 'lib', 'restore.js'));
+ok('safeRel rejects absolute paths',
+  ['/etc/cron.d/evil', '//server/share/x', '\\windows\\system32\\x', 'C:\\x'].every((p) => safeRel(p) === null));
+ok('safeRel rejects .. and reserved names', ['../x', 'a/../../x', 'CON.txt'].every((p) => safeRel(p) === null));
+ok('safeRel keeps normal relative paths', safeRel('src/main.py') === 'src/main.py');
+// 合集里写绝对路径时，应报「路径不安全」而不是写到目标目录之外
+const absMd = path.join(OUT, 'abs-bundle.md');
+fs.writeFileSync(absMd, '### 1. /etc/cron.d/evil\n\n```\nevil\n```\n');
+const rstAbsDir = path.join(OUT, 'r-abs');
+const rstAbs = run(['--restore', absMd, rstAbsDir]);
+ok('absolute bundle path rejected', rstAbs.status === 1 && rstAbs.out.includes('路径不安全')
+  && !fs.existsSync(path.join(rstAbsDir, 'etc')));
+// stdin（run() 助手固定 ignore stdin，这里单独起子进程喂管道）
+(function testStdinRestore() {
+  const log = path.join(LOGS, 'stdin-restore.txt');
+  const fd = fs.openSync(log, 'w');
+  const env = { ...process.env, LANG: 'zh_CN.UTF-8', LANGUAGE: 'zh_CN.UTF-8' };
+  let r;
+  try {
+    r = spawnSync(process.execPath, [BIN, '--restore', '-', path.join(OUT, 'r-stdin')],
+      { input: fs.readFileSync(bundleOut), env, stdio: ['pipe', fd, fd] });
+  } finally { fs.closeSync(fd); }
+  ok('stdin restore', r.status === 0
+    && read(path.join(OUT, 'r-stdin', 'src', 'main.py')) === read(path.join(PROJ, 'src', 'main.py')));
+})();
+// 更新 / diff / backup
+const updDir = path.join(OUT, 'r-upd');
+run(['--restore', bundleOut, updDir]);
+fs.writeFileSync(path.join(updDir, 'src', 'main.py'), 'changed\n', 'utf8');
+const rstDiff = run(['--restore', bundleOut, updDir, '--diff']);
+ok('restore --diff prints unified diff', rstDiff.status === 0
+  && rstDiff.out.includes('--- a/src/main.py') && rstDiff.out.includes('+++ b/src/main.py') && rstDiff.out.includes('@@'));
+ok('restore --backup keeps .bak', (function () {
+  fs.writeFileSync(path.join(updDir, 'src', 'main.py'), 'changed2\n', 'utf8');
+  const r = run(['--restore', bundleOut, updDir, '--backup']);
+  const files = fs.readdirSync(path.join(updDir, 'src'));
+  return r.status === 0 && files.some((f) => /^main\.py\.bak-\d{8}-\d{6}/.test(f))
+    && read(path.join(updDir, 'src', 'main.py')) === read(path.join(PROJ, 'src', 'main.py'));
+})());
+ok('restore --include-pattern filters', (function () {
+  const dir = path.join(OUT, 'r-only');
+  const r = run(['--restore', bundleOut, dir, '--include-pattern', 'src/*']);
+  return r.status === 0 && fs.existsSync(path.join(dir, 'src', 'main.py'))
+    && !fs.existsSync(path.join(dir, 'README.md')) && r.out.includes('不在 --include-pattern 范围');
+})());
+// --max-diff 0：与 Python 一致，只输出 "and N more"，不打印 diff 主体
+ok('--max-diff 0 prints no diff body', (function () {
+  const dir = path.join(OUT, 'r-max0');
+  run(['--restore', bundleOut, dir]);
+  fs.writeFileSync(path.join(dir, 'src', 'main.py'), 'changed\n', 'utf8');
+  const r = run(['--restore', bundleOut, dir, '--diff', '--max-diff', '0']);
+  return r.status === 0 && !r.out.includes('@@') && !r.out.includes('--- a/')
+    && /另外|more/.test(r.out);
+})());
+ok('--restore with --repo -> exit 2', run(['--restore', '--repo', 'https://github.com/o/r']).status === 2);
+ok('second positional without --restore -> exit 2', run([PROJ, 'elsewhere']).status === 2);
+ok('restore target "-" -> exit 2', run(['--restore', bundleOut, '-']).status === 2);
+// --clip：不指定 -o 且输出文件不存在时不落盘，已存在则更新
+function runIn(dir, args) {
+  const log = path.join(LOGS, 'cwd' + (++seq) + '.txt');
+  const fd = fs.openSync(log, 'w');
+  const env = { ...process.env, LANG: 'zh_CN.UTF-8', LANGUAGE: 'zh_CN.UTF-8' };
+  let r;
+  try { r = spawnSync(process.execPath, [BIN].concat(args), { cwd: dir, env, stdio: ['ignore', fd, fd] }); }
+  finally { fs.closeSync(fd); }
+  return { status: r.status, out: fs.readFileSync(log, 'utf8') };
+}
+ok('--clip without existing output creates nothing', (function () {
+  const cwd = path.join(OUT, 'clip-cwd');
+  fs.mkdirSync(cwd, { recursive: true });
+  const r = runIn(cwd, [PROJ, '--clip', '--no-config']);
+  return r.status === 0 && r.out.includes('未创建') && !fs.existsSync(path.join(cwd, 'project_bundle.md'));
+})());
+ok('--clip updates an existing output file', (function () {
+  const cwd = path.join(OUT, 'clip-cwd');
+  fs.writeFileSync(path.join(cwd, 'project_bundle.md'), 'stale\n');
+  const r = runIn(cwd, [PROJ, '--clip', '--no-config']);
+  return r.status === 0 && !r.out.includes('未创建')
+    && read(path.join(cwd, 'project_bundle.md')).includes('# Sample');
+})());
+ok('--clip with -o always creates', (function () {
+  const cwd = path.join(OUT, 'clip-cwd');
+  const r = runIn(cwd, [PROJ, '--clip', '--no-config', '-o', 'custom.md']);
+  return r.status === 0 && fs.existsSync(path.join(cwd, 'custom.md'));
+})());
+// 剪贴板回退：PowerShell 失败必须抛异常，否则 clip 回退分支是死代码
+// （修复前 _winClipboard 返回 false，错误地被当成「成功」，回退永不触发）
+if (process.platform === 'win32') {
+  const cp = require('child_process');
+  const origSpawn = cp.spawnSync;
+  let clipWorks = true;
+  cp.spawnSync = (cmd, a, o) => {
+    if (cmd === 'powershell') return { error: new Error('ENOENT'), status: null };
+    if (cmd === 'clip') return clipWorks ? { error: null, status: 0 } : { error: new Error('ENOENT'), status: null };
+    return origSpawn(cmd, a, o);
+  };
+  try {
+    const clipMod = path.join(__dirname, '..', 'lib', 'clipboard.js');
+    delete require.cache[require.resolve(clipMod)];
+    const { copyClipboard } = require(clipMod);
+    const res = copyClipboard('hello');
+    ok('clipboard falls back to clip when PowerShell fails',
+      res.ok === true && res.how === 'clip', JSON.stringify(res));
+    clipWorks = false;
+    const res2 = copyClipboard('hello');
+    ok('clipboard reports failure when every backend fails', res2.ok === false, JSON.stringify(res2));
+  } finally {
+    cp.spawnSync = origSpawn;
+  }
+}
+// ★ 新增：负数参数拒绝（P0-3）与逗号扩展名（P2）
+ok('--max-file-lines=-5 rejected', run([PROJ, '--max-file-lines=-5', '-o', path.join(OUT, 'neg1.md')]).status === 2);
+ok('--max-file-kb=-3 rejected', run([PROJ, '--max-file-kb=-3', '-o', path.join(OUT, 'neg2.md')]).status === 2);
+ok('--split-tokens=-1 rejected', run([PROJ, '--split-tokens=-1', '-o', path.join(OUT, 'neg3.md')]).status === 2);
+ok('--only-ext accepts comma form', (function () {
+  const o = path.join(OUT, 'csv.md');
+  run([PROJ, '-o', o, '--only-ext=py,md']);
+  const f = bundled(read(o));
+  return f.includes('src/main.py') && !f.includes('src/util.js');
+})());
 
 (async function asyncChecks() {
   ok('CONNECT tunnel established', await withFakeProxy(
@@ -304,13 +527,27 @@ function withFakeProxy(reply, fn) {
   ));
   // 统计口径：emoji 等增补平面字符按 1 个码点计，与 Python len(str) 对齐
 ok('cpLen counts code points', require(path.join(__dirname, '..', 'lib', 'util.js')).cpLen('a😀b') === 3);
-ok('CONNECT failure rejects', await withFakeProxy(
+  ok('CONNECT failure rejects', await withFakeProxy(
     () => 'HTTP/1.1 403 Forbidden\r\n\r\n',
     async (port) => {
       try { await remote.proxyTunnel({ host: '127.0.0.1', port }, 'api.github.com', 443); return false; }
       catch (e) { return /CONNECT failed with HTTP 403/.test(e.message); }
     }
   ));
+  // 响应头与后续字节同处一个 chunk：剩余字节必须回推，不能被丢掉
+  ok('CONNECT keeps bytes after headers', await withStickyProxy(async (port, want) => {
+    const sock = await remote.proxyTunnel({ host: '127.0.0.1', port }, 'api.github.com', 443);
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => { sock.destroy(); resolve(false); }, 3000);
+      sock.once('data', (buf) => {
+        clearTimeout(timer);
+        const got = buf.toString('latin1');
+        sock.destroy();
+        resolve(got === want);
+      });
+      sock.resume();
+    });
+  }));
 
   // ── 收尾 ──
   process.stdout.write('\n' + pass + ' passed, ' + failures.length + ' failed\n');

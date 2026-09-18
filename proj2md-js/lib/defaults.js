@@ -1,5 +1,5 @@
 'use strict';
-const VERSION = '2.3.2';
+const VERSION = '2.4.1';
 const TOOL = 'proj2md';
 const CONFIG_FILENAME = 'proj2md.json';
 const DEFAULT_OUTPUT = 'project_bundle.md';
@@ -27,6 +27,8 @@ const DEFAULT_EXCLUDE_DIRS = new Set([
   'venv', '.venv', 'env', 'virtualenv',
   'dist', 'build', 'out', 'target', 'obj', 'bin', 'vendor',
   'Pods', 'Carthage', 'coverage', '.nyc_output', '.parcel-cache',
+  // 构建产物（支持通配目录名，见 discover）：常被误拼进合集
+  '*.egg-info', '*.dist-info', '.eggs',
 ]);
 const DEFAULT_EXCLUDE_FILES = new Set([
   'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'poetry.lock',
